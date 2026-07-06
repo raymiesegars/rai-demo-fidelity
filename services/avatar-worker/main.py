@@ -99,7 +99,7 @@ class AvatarPublisher:
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.45"))
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.35"))
         self._max_utterance_sec = float(os.environ.get("MAX_UTTERANCE_SEC", "12"))
-        self._speech_threshold = float(os.environ.get("SPEECH_ENERGY_THRESHOLD", "800"))
+        self._speech_threshold = float(os.environ.get("SPEECH_ENERGY_THRESHOLD", "400"))
         self._animation_threshold = float(
             os.environ.get("ANIMATION_ENERGY_THRESHOLD", "150")
         )

@@ -57,8 +57,16 @@ def checkpoint_is_valid(path: Path) -> bool:
     try:
         import torch
 
-        torch.load(str(path), map_location="cpu", weights_only=False)
-        return True
+        obj = torch.load(str(path), map_location="cpu", weights_only=False)
+        if isinstance(obj, dict) and "state_dict" in obj:
+            return True
+        logger.warning(
+            "Checkpoint is wrong format (%s) — need dict with state_dict. "
+            "The Google Drive file is TorchScript and will NOT work. "
+            "Re-download from HuggingFace: Nekochu/Wav2Lip",
+            type(obj).__name__,
+        )
+        return False
     except Exception as exc:
         logger.warning("Checkpoint failed torch.load: %s", exc)
         return False
