@@ -43,8 +43,6 @@ class SpeechReactiveMouth:
         self._lower_drop = float(os.environ.get("MOUTH_LOWER_DROP", "0.32"))
         self._corner_move = float(os.environ.get("MOUTH_CORNER_MOVE", "0.55"))
         self._chin_damp_start = float(os.environ.get("MOUTH_CHIN_DAMP_START", "0.78"))
-        self._upper_center = float(os.environ.get("MOUTH_UPPER_CENTER", "0.30"))
-        self._lower_center = float(os.environ.get("MOUTH_LOWER_CENTER", "0.54"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "350"))
         self._silence_cutoff = float(os.environ.get("MOUTH_SILENCE_CUTOFF_SEC", "0.10"))
@@ -114,15 +112,12 @@ class SpeechReactiveMouth:
         warped = _warp_mouth_open(
             orig,
             o,
-            self._lip_line,
             self._upper_lift,
             self._lower_drop,
             self._corner_move,
             self._chin_damp_start,
-            self._upper_center,
-            self._lower_center,
         )
-        mask = _lip_blend_mask(h, w, self._upper_center, self._lower_center, self._chin_damp_start)
+        mask = _full_mouth_mask(h, w, self._chin_damp_start)
         blended = warped * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
         out[ly1:ly2, lx1:lx2, :3] = np.clip(blended, 0, 255).astype(np.uint8)
 
@@ -132,7 +127,7 @@ class SpeechReactiveMouth:
             cv2.line(out, (lx1, lip_y), (lx2, lip_y), (0, 255, 255), 1)
             chin_y = ly1 + int(h * self._chin_damp_start)
             cv2.line(out, (lx1, chin_y), (lx2, chin_y), (255, 128, 0), 1)
-            _draw_debug_lips(out, lx1, ly1, w, h, self._upper_center, self._lower_center)
+            _draw_debug_lips(out, lx1, ly1, w, h)
 
         return out
 
@@ -145,24 +140,19 @@ def _chin_protect(yy: np.ndarray, h: float, chin_start_frac: float) -> np.ndarra
 
 
 def _lip_band(yy: np.ndarray, center_y: float, sigma: float) -> np.ndarray:
-    """Gaussian weight peaked on a lip — zero on surrounding skin."""
     return np.exp(-0.5 * ((yy - center_y) / max(1.0, sigma)) ** 2)
 
 
 def _warp_mouth_open(
     roi: np.ndarray,
     openness: float,
-    lip_line_frac: float,
     upper_frac: float,
     lower_frac: float,
     corner_move: float,
     chin_damp_start: float,
-    upper_center_frac: float,
-    lower_center_frac: float,
 ) -> np.ndarray:
-    """Move lip pixels apart — positive disp lifts upper lip, negative disp drops lower lip."""
+    """Smooth lip-band warp — no hard seam split, motion peaks on lips not philtrum/chin."""
     h, w = roi.shape[:2]
-    lip_y = lip_line_frac * h
     upper_lift = max(0.5, h * upper_frac * openness)
     lower_drop = max(1.0, h * lower_frac * openness)
 
@@ -172,16 +162,14 @@ def _warp_mouth_open(
     falloff = corner_move + (1.0 - corner_move) * (1.0 - edge)
     chin = _chin_protect(yy, float(h), chin_damp_start)
 
-    upper_y = h * upper_center_frac
-    lower_y = h * lower_center_frac
-    upper_band = _lip_band(yy, upper_y, h * 0.09)
-    lower_band = _lip_band(yy, lower_y, h * 0.10)
-    # Keep the closed-mouth seam static so skin does not slide over the opening.
-    seam = np.clip(np.abs(yy - lip_y) / max(1.0, h * 0.04), 0.0, 1.0)
+    upper_y = h * 0.32
+    lower_y = h * 0.58
+    upper_band = _lip_band(yy, upper_y, h * 0.11)
+    lower_band = _lip_band(yy, lower_y, h * 0.12)
 
     disp = (
-        upper_lift * falloff * upper_band * seam * chin
-        - lower_drop * falloff * lower_band * seam * chin
+        -upper_lift * falloff * upper_band * chin
+        + lower_drop * falloff * lower_band * chin
     )
 
     map_y = yy + disp
@@ -196,22 +184,14 @@ def _warp_mouth_open(
     )
 
 
-def _lip_blend_mask(
-    h: int,
-    w: int,
-    upper_center_frac: float,
-    lower_center_frac: float,
-    chin_damp_start: float,
-) -> np.ndarray:
-    """Blend warp only on lip tissue — not philtrum or chin skin."""
+def _full_mouth_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
+    """Cover upper + lower lip with full vertical thickness; fade out on chin only."""
     mask = np.zeros((h, w), dtype=np.float32)
-    upper_y = int(h * upper_center_frac)
-    lower_y = int(h * lower_center_frac)
 
     cv2.ellipse(
         mask,
-        (w // 2, upper_y),
-        (max(4, int(w * 0.44)), max(3, int(h * 0.16))),
+        (w // 2, int(h * 0.32)),
+        (max(4, int(w * 0.46)), max(3, int(h * 0.24))),
         0,
         0,
         360,
@@ -220,44 +200,30 @@ def _lip_blend_mask(
     )
     cv2.ellipse(
         mask,
-        (w // 2, lower_y),
-        (max(4, int(w * 0.45)), max(3, int(h * 0.17))),
+        (w // 2, int(h * 0.64)),
+        (max(4, int(w * 0.48)), max(3, int(h * 0.28))),
         0,
         0,
         360,
         1.0,
         -1,
     )
-    # Mouth corners only — no full-height rectangle.
-    corner_y1, corner_y2 = int(h * 0.34), int(h * 0.50)
-    corner_x1, corner_x2 = int(w * 0.04), int(w * 0.96)
-    mask[corner_y1:corner_y2, corner_x1:corner_x2] = np.maximum(
-        mask[corner_y1:corner_y2, corner_x1:corner_x2],
-        0.55,
-    )
+    y1, y2 = int(h * 0.18), int(h * 0.82)
+    x1, x2 = int(w * 0.06), int(w * 0.94)
+    mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], 0.92)
 
     chin = _chin_protect(np.arange(h, dtype=np.float32)[:, np.newaxis], float(h), chin_damp_start)
     mask *= chin
 
-    blur = max(3, min(h, w) // 10) | 1
+    blur = max(3, min(h, w) // 8) | 1
     return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
 
 
-def _draw_debug_lips(
-    out: np.ndarray,
-    ox: int,
-    oy: int,
-    w: int,
-    h: int,
-    upper_center_frac: float,
-    lower_center_frac: float,
-) -> None:
-    upper_y = int(h * upper_center_frac)
-    lower_y = int(h * lower_center_frac)
+def _draw_debug_lips(out: np.ndarray, ox: int, oy: int, w: int, h: int) -> None:
     cv2.ellipse(
         out,
-        (ox + w // 2, oy + upper_y),
-        (max(3, int(w * 0.44)), max(2, int(h * 0.16))),
+        (ox + w // 2, oy + int(h * 0.32)),
+        (max(3, int(w * 0.46)), max(2, int(h * 0.24))),
         0,
         0,
         360,
@@ -266,8 +232,8 @@ def _draw_debug_lips(
     )
     cv2.ellipse(
         out,
-        (ox + w // 2, oy + lower_y),
-        (max(3, int(w * 0.45)), max(2, int(h * 0.17))),
+        (ox + w // 2, oy + int(h * 0.64)),
+        (max(3, int(w * 0.48)), max(2, int(h * 0.28))),
         0,
         0,
         360,
