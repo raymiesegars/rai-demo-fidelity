@@ -75,7 +75,8 @@ def detect_face_box(video_path: str, wav2lip_root: Path) -> tuple[int, int, int,
         device=device,
     )
     try:
-        rect = detector.get_detections_for_batch([frame])[0]
+        batch = np.asarray([frame])
+        rect = detector.get_detections_for_batch(batch)[0]
     finally:
         del detector
 
