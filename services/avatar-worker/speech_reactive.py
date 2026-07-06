@@ -36,19 +36,18 @@ class SpeechReactiveMouth:
         self._openness = 0.0
         self._smooth_energy = 0.0
         self._last_voice_at = 0.0
-        self._attack = float(os.environ.get("MOUTH_ATTACK", "0.42"))
-        self._decay = float(os.environ.get("MOUTH_DECAY", "0.28"))
-        self._open_amount = float(os.environ.get("MOUTH_OPEN_AMOUNT", "0.95"))
-        self._upper_lift = float(os.environ.get("MOUTH_UPPER_LIFT", "0.07"))
-        self._lower_drop = float(os.environ.get("MOUTH_LOWER_DROP", "0.24"))
-        self._corner_move = float(os.environ.get("MOUTH_CORNER_MOVE", "0.62"))
+        self._attack = float(os.environ.get("MOUTH_ATTACK", "0.38"))
+        self._decay = float(os.environ.get("MOUTH_DECAY", "0.24"))
+        self._open_amount = float(os.environ.get("MOUTH_OPEN_AMOUNT", "0.72"))
+        self._stretch = float(os.environ.get("MOUTH_STRETCH", "0.11"))
+        self._corner_move = float(os.environ.get("MOUTH_CORNER_MOVE", "0.76"))
         self._chin_damp_start = float(os.environ.get("MOUTH_CHIN_DAMP_START", "0.78"))
-        self._gap_shade = float(os.environ.get("MOUTH_GAP_SHADE", "0.85"))
-        self._gap_width = float(os.environ.get("MOUTH_GAP_WIDTH", "0.18"))
+        self._gap_shade = float(os.environ.get("MOUTH_GAP_SHADE", "0.52"))
+        self._gap_width = float(os.environ.get("MOUTH_GAP_WIDTH", "0.13"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "350"))
         self._silence_cutoff = float(os.environ.get("MOUTH_SILENCE_CUTOFF_SEC", "0.10"))
-        self._lip_line = float(os.environ.get("MOUTH_LIP_LINE", "0.42"))
+        self._lip_line = float(os.environ.get("MOUTH_LIP_LINE", "0.41"))
         self._logged_roi = False
 
     @property
@@ -69,15 +68,14 @@ class SpeechReactiveMouth:
 
     def update(self, energy: float) -> float:
         now = time.monotonic()
-        # Extra smoothing reduces the twitchy look from frame-to-frame energy spikes.
-        self._smooth_energy = self._smooth_energy * 0.72 + energy * 0.28
+        self._smooth_energy = self._smooth_energy * 0.75 + energy * 0.25
 
         if self._smooth_energy >= self._threshold:
             self._last_voice_at = now
             norm = min(1.0, (self._smooth_energy - self._threshold) / self._sensitivity)
-            target = 0.32 + 0.58 * norm
+            target = 0.22 + 0.48 * norm
         elif now - self._last_voice_at < self._silence_cutoff:
-            target = self._openness * 0.62
+            target = self._openness * 0.58
         else:
             target = 0.0
 
@@ -112,19 +110,18 @@ class SpeechReactiveMouth:
         o = self._openness * self._open_amount
         out = frame.copy()
         orig = out[ly1:ly2, lx1:lx2, :3].astype(np.float32)
-        warped = _warp_mouth_open(
+        warped = _warp_scale_open(
             orig,
             o,
-            self._upper_lift,
-            self._lower_drop,
+            self._stretch,
             self._corner_move,
             self._chin_damp_start,
             self._lip_line,
         )
-        mask = _lip_blend_mask(h, w, self._chin_damp_start)
-        blended = warped * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
-        interior = _mouth_opening_mask(h, w, self._lip_line, o, self._gap_width)
-        blended = _paint_mouth_interior(blended, interior, self._gap_shade)
+        lip_mask = _lip_blend_mask(h, w, self._chin_damp_start)
+        blended = warped * lip_mask[:, :, np.newaxis] + orig * (1.0 - lip_mask[:, :, np.newaxis])
+        cavity = _mouth_cavity_mask(h, w, self._lip_line, o, self._gap_width)
+        blended = _soften_cavity(blended, orig, cavity, self._gap_shade)
         out[ly1:ly2, lx1:lx2, :3] = np.clip(blended, 0, 255).astype(np.uint8)
 
         if os.environ.get("MOUTH_DEBUG", "0") == "1":
@@ -139,7 +136,6 @@ class SpeechReactiveMouth:
 
 
 def _chin_protect(yy: np.ndarray, h: float, chin_start_frac: float) -> np.ndarray:
-    """Fade displacement to zero below chin_start_frac (keeps jaw static)."""
     chin_y = h * chin_start_frac
     tail = max(1.0, h - chin_y)
     return np.clip(1.0 - (yy - chin_y) / tail, 0.0, 1.0)
@@ -149,39 +145,39 @@ def _lip_band(yy: np.ndarray, center_y: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * ((yy - center_y) / max(1.0, sigma)) ** 2)
 
 
-def _warp_mouth_open(
+def _mouth_falloff(xx: np.ndarray, w: int, corner_move: float) -> np.ndarray:
+    cx = (w - 1) * 0.5
+    edge = np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0)
+    return corner_move + (1.0 - corner_move) * (1.0 - edge)
+
+
+def _warp_scale_open(
     roi: np.ndarray,
     openness: float,
-    upper_frac: float,
-    lower_frac: float,
+    stretch_frac: float,
     corner_move: float,
     chin_damp_start: float,
     lip_line_frac: float,
 ) -> np.ndarray:
-    """Part lips by moving lip pixels apart — positive lifts upper, negative drops lower."""
+    """Stretch lips apart from the closed-mouth seam — less skin smear than displacement."""
     h, w = roi.shape[:2]
-    upper_lift = max(0.4, h * upper_frac * openness)
-    lower_drop = max(0.6, h * lower_frac * openness)
+    lip_y = lip_line_frac * h
+    stretch = max(0.0, stretch_frac * openness)
 
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    cx = (w - 1) * 0.5
-    edge = np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0)
-    falloff = corner_move + (1.0 - corner_move) * (1.0 - edge)
+    falloff = _mouth_falloff(xx, w, corner_move)
     chin = _chin_protect(yy, float(h), chin_damp_start)
 
-    lip_y = lip_line_frac * h
-    upper_y = lip_y - h * 0.10
-    lower_y = lip_y + h * 0.12
-    upper_band = _lip_band(yy, upper_y, h * 0.09)
-    lower_band = _lip_band(yy, lower_y, h * 0.10)
+    upper_w = _lip_band(yy, lip_y - h * 0.07, h * 0.06)
+    lower_w = _lip_band(yy, lip_y + h * 0.08, h * 0.07)
+    weight = np.clip(upper_w + lower_w, 0.0, 1.0) * falloff * chin
+    scale = 1.0 + stretch * weight
 
-    # remap: dst(y)=src(y+disp). +disp shifts content up, -disp shifts content down.
-    disp = (
-        upper_lift * falloff * upper_band * chin
-        - lower_drop * falloff * lower_band * chin
+    map_y = np.where(
+        yy < lip_y,
+        lip_y - (lip_y - yy) * scale,
+        lip_y + (yy - lip_y) * scale,
     )
-
-    map_y = yy + disp
     map_x = xx.copy()
 
     return cv2.remap(
@@ -193,67 +189,65 @@ def _warp_mouth_open(
     )
 
 
-def _mouth_opening_mask(
+def _mouth_cavity_mask(
     h: int,
     w: int,
     lip_line_frac: float,
     openness: float,
     gap_width_frac: float,
 ) -> np.ndarray:
-    """Organic mouth hole — elliptical, pinched at corners (not a rectangle)."""
-    if openness < 0.10:
+    """Small soft opening between inner lip edges — stays off the lip skin itself."""
+    if openness < 0.14:
         return np.zeros((h, w), dtype=np.float32)
 
     lip_y = lip_line_frac * h
-    gap_h = max(2.0, h * (0.028 + 0.042 * openness))
-    gap_w = max(3.0, w * (gap_width_frac + 0.07 * openness))
+    gap_h = max(1.5, h * (0.018 + 0.028 * openness))
+    gap_w = max(2.5, w * (gap_width_frac + 0.04 * openness))
 
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     cx = (w - 1) * 0.5
     dy = (yy - lip_y) / gap_h
     dx = (xx - cx) / gap_w
-    core = np.clip(1.0 - (dx * dx + dy * dy * 1.15), 0.0, 1.0) ** 1.4
+    core = np.clip(1.0 - (dx * dx * 1.35 + dy * dy), 0.0, 1.0) ** 2.2
 
     edge = np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0)
-    corner_pin = 1.0 - 0.82 * np.clip((edge - 0.48) / 0.52, 0.0, 1.0) ** 1.2
+    corner_pin = 1.0 - 0.88 * np.clip((edge - 0.42) / 0.58, 0.0, 1.0) ** 1.4
 
     mask = core * corner_pin
-    blur = max(3, min(h, w) // 14) | 1
-    return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
+    blur = max(5, min(h, w) // 8) | 1
+    mask = cv2.GaussianBlur(mask, (blur, blur), 0)
+
+    erode_k = max(3, min(h, w) // 20) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+    mask = cv2.erode((mask * 255).astype(np.uint8), kernel, iterations=1).astype(np.float32) / 255.0
+    return np.clip(mask, 0.0, 1.0)
 
 
-def _paint_mouth_interior(
-    roi: np.ndarray,
-    opening_mask: np.ndarray,
+def _soften_cavity(
+    warped: np.ndarray,
+    orig: np.ndarray,
+    cavity_mask: np.ndarray,
     strength: float,
 ) -> np.ndarray:
-    """Replace the opening with a dark oral-cavity color — not darkened skin."""
-    if strength <= 0.0 or opening_mask.max() < 0.02:
-        return roi
+    """Darken/desaturate the gap toward a cavity — blend with original shadows, not flat paint."""
+    if strength <= 0.0 or cavity_mask.max() < 0.02:
+        return warped
 
-    h, w = roi.shape[:2]
-    yy, _xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    cx, cy = (w - 1) * 0.5, h * 0.5
-    dist = np.sqrt(((yy - cy) / max(1.0, h)) ** 2 + ((_xx - cx) / max(1.0, w)) ** 2)
-
-    # Warm dark cavity (BGR); slightly lighter at top for subtle depth.
-    base = np.array([18.0, 10.0, 14.0], dtype=np.float32)
-    top_lift = np.clip(1.0 - (yy / max(1.0, h - 1.0)) * 0.35, 0.65, 1.0)
-    interior = base * top_lift[:, :, np.newaxis]
-    interior += np.array([6.0, 2.0, 4.0], dtype=np.float32) * (1.0 - dist[:, :, np.newaxis]) * 0.25
-
-    m = opening_mask[:, :, np.newaxis] * strength
-    return roi * (1.0 - m) + interior * m
+    m = cavity_mask[:, :, np.newaxis] * strength
+    shadow = np.minimum(orig, warped)
+    luma = shadow.mean(axis=2, keepdims=True)
+    cavity = luma * 0.22 + np.array([16.0, 8.0, 10.0], dtype=np.float32)
+    cavity = np.clip(cavity, 0.0, 255.0)
+    return warped * (1.0 - m) + cavity * m
 
 
 def _lip_blend_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
-    """Blend warp on lip ellipses only — no rectangular bridge."""
     mask = np.zeros((h, w), dtype=np.float32)
 
     cv2.ellipse(
         mask,
-        (w // 2, int(h * 0.34)),
-        (max(4, int(w * 0.44)), max(3, int(h * 0.17))),
+        (w // 2, int(h * 0.35)),
+        (max(4, int(w * 0.42)), max(3, int(h * 0.15))),
         0,
         0,
         360,
@@ -262,8 +256,8 @@ def _lip_blend_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
     )
     cv2.ellipse(
         mask,
-        (w // 2, int(h * 0.56)),
-        (max(4, int(w * 0.45)), max(3, int(h * 0.18))),
+        (w // 2, int(h * 0.55)),
+        (max(4, int(w * 0.43)), max(3, int(h * 0.16))),
         0,
         0,
         360,
@@ -281,8 +275,8 @@ def _lip_blend_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
 def _draw_debug_lips(out: np.ndarray, ox: int, oy: int, w: int, h: int) -> None:
     cv2.ellipse(
         out,
-        (ox + w // 2, oy + int(h * 0.34)),
-        (max(3, int(w * 0.44)), max(2, int(h * 0.18))),
+        (ox + w // 2, oy + int(h * 0.35)),
+        (max(3, int(w * 0.42)), max(2, int(h * 0.15))),
         0,
         0,
         360,
@@ -291,8 +285,8 @@ def _draw_debug_lips(out: np.ndarray, ox: int, oy: int, w: int, h: int) -> None:
     )
     cv2.ellipse(
         out,
-        (ox + w // 2, oy + int(h * 0.56)),
-        (max(3, int(w * 0.45)), max(2, int(h * 0.19))),
+        (ox + w // 2, oy + int(h * 0.55)),
+        (max(3, int(w * 0.43)), max(2, int(h * 0.16))),
         0,
         0,
         360,
