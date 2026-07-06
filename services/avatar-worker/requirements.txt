@@ -1,0 +1,6 @@
+livekit~=1.0
+livekit-api~=1.0
+opencv-python-headless~=4.10
+numpy~=2.0
+python-dotenv~=1.0
+aiohttp~=3.11

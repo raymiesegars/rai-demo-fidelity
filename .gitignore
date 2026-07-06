@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Environment & secrets
+.env
+.env.local
+.env*.local
+!.env.example
+
+# SSH keys (never commit)
+id_ed25519
+id_ed25519.pub
+
+# Build / cache
+.next/
+out/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Model weights (RunPod)
+checkpoints/
+*.onnx
+*.trt
+
+# Logs
+*.log

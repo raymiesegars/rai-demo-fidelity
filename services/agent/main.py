@@ -1,0 +1,94 @@
+"""LiveKit agent — text chat in, Cartesia TTS audio out."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+
+from dotenv import load_dotenv
+from livekit import rtc
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    cli,
+)
+from livekit.agents.voice.events import ConversationItemAddedEvent
+from livekit.plugins import cartesia, openai
+
+load_dotenv()
+
+logger = logging.getLogger("patient-agent")
+
+PATIENT_INSTRUCTIONS = """You are Alan, a patient in a medical intake demo.
+You are calm, cooperative, and speak in short natural sentences (1-3 sentences per reply).
+You have mild lower-back pain for about two weeks, worse when bending.
+Answer the clinician's questions directly. Do not break character or mention being an AI.
+Keep responses under 80 words unless asked for detail."""
+
+
+class PatientAgent(Agent):
+    def __init__(self) -> None:
+        super().__init__(instructions=PATIENT_INSTRUCTIONS)
+
+
+server = AgentServer()
+
+
+@server.rtc_session()
+async def entrypoint(ctx: JobContext) -> None:
+    voice_id = os.environ.get(
+        "CARTESIA_VOICE_ID", "df89f42f-f285-4613-adbf-14eedcec4c9e"
+    )
+
+    session = AgentSession(
+        llm=openai.LLM(model="gpt-4o-mini"),
+        tts=cartesia.TTS(voice=voice_id),
+    )
+
+    @session.on("conversation_item_added")
+    def on_conversation_item(ev: ConversationItemAddedEvent) -> None:
+        item = ev.item
+        if item.role != "assistant":
+            return
+        text = item.text_content
+        if not text:
+            return
+
+        payload = json.dumps(
+            {"text": text, "charCount": len(text)}
+        ).encode()
+
+        async def publish() -> None:
+            await ctx.room.local_participant.publish_data(
+                payload, reliable=True, topic="agent_reply"
+            )
+
+        asyncio.create_task(publish())
+
+    agent = PatientAgent()
+    await session.start(agent=agent, room=ctx.room)
+
+    @ctx.room.on("data_received")
+    def on_data(data: rtc.DataPacket) -> None:
+        if data.topic != "user_text":
+            return
+        try:
+            message = json.loads(data.data.decode("utf-8"))
+            user_text = message.get("text", "").strip()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not user_text:
+            return
+
+        logger.info("User text: %s", user_text[:120])
+        session.generate_reply(user_input=user_text, input_modality="text")
+
+    logger.info("Patient agent ready in room %s", ctx.room.name)
+
+
+if __name__ == "__main__":
+    cli.run_app(server)
