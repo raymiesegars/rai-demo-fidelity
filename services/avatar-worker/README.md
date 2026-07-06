@@ -1,10 +1,8 @@
 # Avatar worker (RunPod GPU)
 
-Streams Alan's ping-pong idle loop to LiveKit and (eventually) drives the mouth from agent TTS audio.
+## Quick start — demo today (no lip sync)
 
-## Recommended demo today — idle loop only
-
-Wav2Lip lip-patch compositing **does not work** on a moving full-body loop (delay, misalignment, floating mouth). Use clean idle mode until LivePortrait is wired in.
+Clean ping-pong loop + agent voice. Use this if LivePortrait is not installed yet.
 
 ```bash
 cd /workspace/rai-demo-fidelity/services/avatar-worker
@@ -14,48 +12,44 @@ export $(grep -v '^#' .env | xargs)
 python main.py
 ```
 
-You should see: `AVATAR_MODE=mock` — Alan loops naturally while the agent speaks. Voice + chat still work.
-
 ---
 
-## Why Wav2Lip composite failed
+## Lip sync — LivePortrait + JoyVASA (recommended path)
 
-| Approach | Problem |
-|----------|---------|
-| Mouth warp / pulse | Giant box scaling, not real lips |
-| Wav2Lip full-loop batch | Seconds late, blurry |
-| Wav2Lip static + lip patch | ~1s lag, patch misaligned on moving head, looks like a second mouth |
+Wav2Lip lip patches **do not work** on a moving full-body loop. This stack drives the **actual face mesh** on each loop frame.
 
-**Root issue:** batch lip models trained on a **still face** cannot be pasted onto a **ping-pong body loop** and look real.
-
----
-
-## Real solution — FasterLivePortrait + JoyVASA
-
-This is what actually targets your goal: **audio-driven facial motion rendered back into the video**, with **lip-only region** when the source is a video loop (per FasterLivePortrait docs).
-
-### One-time setup on RunPod
+### Step 1 — Install models (once, ~15–30 min)
 
 ```bash
 cd /workspace/rai-demo-fidelity/services/avatar-worker
 bash setup_liveportrait.sh
 ```
 
-### Manual quality check (before we automate)
+### Step 2 — Enable LivePortrait mode
+
+```bash
+bash apply_liveportrait_env.sh
+export $(grep -v '^#' .env | xargs)
+python main.py
+```
+
+Look for:
+
+```
+LivePortrait engine found at /workspace/FasterLivePortrait
+Mouth drive: liveportrait — JoyVASA + LivePortrait
+```
+
+If models are missing, the worker falls back to idle loop automatically.
+
+### Optional — test quality in FLP web UI first
 
 ```bash
 cd /workspace/FasterLivePortrait
 python webui.py --mode onnx
-# Open http://localhost:9870 — use Alan's loop as source, drive with a TTS wav, lip-only region
 ```
 
-### What we will build next (`AVATAR_MODE=liveportrait`)
-
-1. JoyVASA turns agent audio → face motion coefficients in real time  
-2. LivePortrait warps the **current loop frame** (lip region only)  
-3. No batch delay, no floating patches — same pose as the idle loop  
-
-`AVATAR_MODE=liveportrait` is not automated yet; `setup_liveportrait.sh` + web UI test is the current milestone.
+Source = `alan-loop.mp4`, Drive = Audio, Animation region = **exp** (mouth/expression only).
 
 ---
 
@@ -63,20 +57,22 @@ python webui.py --mode onnx
 
 | AVATAR_MODE | Behavior |
 |-------------|----------|
-| `mock` | **Recommended** — ping-pong idle loop, agent voice only |
-| `wav2lip` | Legacy — only if `MOUTH_DRIVE=composite` (not recommended) |
-| `liveportrait` | Coming soon — JoyVASA + FasterLivePortrait |
+| `mock` | Idle loop only — safe demo default |
+| `liveportrait` | JoyVASA audio → LivePortrait face warp on loop frames |
+| `wav2lip` | Legacy — only with `MOUTH_DRIVE=composite` (not recommended) |
 
-| MOUTH_DRIVE | Behavior |
-|-------------|----------|
-| `idle` | **Recommended** — no mouth hack |
-| `composite` | Deprecated — Wav2Lip patches (broken on loop video) |
+## Env scripts
 
----
+| Script | Purpose |
+|--------|---------|
+| `apply_demo_env.sh` | Idle loop demo |
+| `apply_liveportrait_env.sh` | LivePortrait lip sync |
+| `setup_liveportrait.sh` | Download FLP + JoyVASA models |
 
-## Env files
+## Env vars (LivePortrait)
 
-| Script | What it does |
-|--------|----------------|
-| `bash apply_demo_env.sh` | Sets `AVATAR_MODE=mock` + `MOUTH_DRIVE=idle` |
-| `bash apply_lip_composite_env.sh` | Legacy Wav2Lip composite (do not use for demo) |
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `FLP_ROOT` | `/workspace/FasterLivePortrait` | FasterLivePortrait install |
+| `FLP_CFG` | `configs/onnx_infer.yaml` | Inference config |
+| `FLP_ANIMATION_REGION` | `exp` | `exp` = mouth/expression only on video source |

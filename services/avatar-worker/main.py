@@ -20,6 +20,7 @@ from livekit import api, rtc
 
 from lip_sync import Wav2LipEngine, save_wav_int16
 from composite import composite_lip_patch
+from liveportrait_engine import LivePortraitEngine
 
 load_dotenv()
 
@@ -69,6 +70,10 @@ class AudioReactiveLoop:
 
         logger.info("Loaded %d frames (%dx%d)", len(self.frames), self.width, self.height)
 
+    @property
+    def current_index(self) -> int:
+        return self._index
+
     def current_box(self) -> list[int] | None:
         if not self._face_boxes:
             return None
@@ -113,8 +118,8 @@ def is_agent_participant(participant: rtc.RemoteParticipant) -> bool:
 
 
 @dataclass
-class TimedPatch:
-    patch: np.ndarray
+class TimedFrame:
+    frame: np.ndarray
     play_at: float
 
 
@@ -123,21 +128,28 @@ class AvatarPublisher:
         self,
         loop: AudioReactiveLoop,
         source: rtc.VideoSource,
-        lipsync: Wav2LipEngine | None,
         fps: int,
+        lipsync: Wav2LipEngine | None = None,
+        liveportrait: LivePortraitEngine | None = None,
     ) -> None:
         self.loop = loop
         self.source = source
-        self.lipsync = lipsync
         self.fps = fps
         mouth_drive = os.environ.get("MOUTH_DRIVE", "idle").lower()
-        self._use_composite = (
-            mouth_drive == "composite" and lipsync is not None and lipsync.is_ready()
-        )
-        self._play_wav2lip = self._use_composite or os.environ.get(
-            "WAV2LIP_PLAYBACK", "0"
-        ).lower() in ("1", "true", "yes")
-        self._lip_patch_queue: deque[TimedPatch] = deque()
+
+        self._lp = liveportrait if liveportrait and liveportrait.is_ready() else None
+        self._wav = None
+        if self._lp is None and mouth_drive == "composite" and lipsync and lipsync.is_ready():
+            self._wav = lipsync
+
+        if self._lp is not None:
+            self._drive = "liveportrait"
+        elif self._wav is not None:
+            self._drive = "composite"
+        else:
+            self._drive = "idle"
+
+        self._frame_queue: deque[TimedFrame] = deque()
         self._audio_buffer: list[np.ndarray] = []
         self._buffer_start_time = 0.0
         self._chunks_sent = 0
@@ -146,29 +158,47 @@ class AvatarPublisher:
         self._last_energy = 0.0
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.35"))
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.2"))
-        self._first_chunk_sec = float(os.environ.get("LIP_SYNC_FIRST_CHUNK_SEC", "0.2"))
-        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "0.4"))
+        self._first_chunk_sec = float(
+            os.environ.get(
+                "LIP_SYNC_FIRST_CHUNK_SEC",
+                "0.5" if self._drive == "liveportrait" else "0.2",
+            )
+        )
+        self._chunk_sec = float(
+            os.environ.get(
+                "LIP_SYNC_CHUNK_SEC",
+                "0.8" if self._drive == "liveportrait" else "0.4",
+            )
+        )
         self._patch_stale_sec = float(os.environ.get("LIP_PATCH_STALE_SEC", "0.25"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
         self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
         self._active_agent: str | None = None
         self._subscribed_audio_sids: set[str] = set()
-        self._lipsync_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="wav2lip"
+        self._drive_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="lip-drive"
         )
-        self._wav_queue: asyncio.Queue[tuple[str, float, float] | None] = asyncio.Queue(
-            maxsize=4
+        self._wav_queue: asyncio.Queue[tuple[str, float, float, int, bool] | None] = (
+            asyncio.Queue(maxsize=2)
         )
+        self._reset_next_motion = True
 
-        if lipsync and self._use_composite:
+        if self._drive == "liveportrait":
             logger.info(
-                "Mouth drive: composite — lip patches scheduled to agent audio "
+                "Mouth drive: liveportrait — JoyVASA + LivePortrait "
                 "(first_chunk=%.2fs, chunk=%.2fs)",
                 self._first_chunk_sec,
                 self._chunk_sec,
             )
-        elif lipsync and not self._play_wav2lip:
-            logger.info("Mouth drive: idle loop only (set MOUTH_DRIVE=composite)")
+        elif self._drive == "composite":
+            logger.info(
+                "Mouth drive: composite (legacy wav2lip) "
+                "(first_chunk=%.2fs, chunk=%.2fs)",
+                self._first_chunk_sec,
+                self._chunk_sec,
+            )
+        else:
+            logger.info("Mouth drive: idle — ping-pong loop only")
 
     def set_active_agent(self, identity: str) -> None:
         if self._active_agent == identity:
@@ -178,7 +208,8 @@ class AvatarPublisher:
         self._audio_buffer.clear()
         self._buffer_start_time = 0.0
         self._chunks_sent = 0
-        self._lip_patch_queue.clear()
+        self._frame_queue.clear()
+        self._reset_next_motion = True
         self._subscribed_audio_sids.clear()
 
     def append_audio(self, pcm: np.ndarray, agent_identity: str) -> None:
@@ -194,12 +225,14 @@ class AvatarPublisher:
             return
         if not self._audio_buffer:
             self._buffer_start_time = now
+            self._chunks_sent = 0
+            self._reset_next_motion = True
         self._audio_buffer.append(pcm)
         self._last_speech_at = now
         self._last_audio_at = now
 
     def _prepare_chunk(self) -> tuple[np.ndarray, float, float] | None:
-        if not self._audio_buffer or not self.lipsync:
+        if not self._audio_buffer or self._drive == "idle":
             return None
         samples = np.concatenate(self._audio_buffer)
         duration = len(samples) / 48000
@@ -238,10 +271,10 @@ class AvatarPublisher:
         self._chunks_sent = 0
         return samples, chunk_start, duration
 
-    def _enqueue_patches(
-        self, patches: list[np.ndarray], chunk_start: float, chunk_dur: float
+    def _enqueue_frames(
+        self, frames: list[np.ndarray], chunk_start: float, chunk_dur: float
     ) -> None:
-        n = len(patches)
+        n = len(frames)
         if n == 0:
             return
         now = time.monotonic()
@@ -252,49 +285,38 @@ class AvatarPublisher:
         if now >= end:
             if not self._is_speaking():
                 logger.info(
-                    "Dropped %d lip patches — speech ended (lag=%.0fms)",
+                    "Dropped %d driven frames — speech ended (lag=%.0fms)",
                     n,
                     lag * 1000,
                 )
                 return
             t0, span = now, chunk_dur
-            logger.info(
-                "Late chunk lag=%.0fms — playing %d patches over %.2fs",
-                lag * 1000,
-                n,
-                span,
-            )
         else:
             t0, span = chunk_start, chunk_dur
 
-        for i, patch in enumerate(patches):
+        for i, frame in enumerate(frames):
             play_at = t0 + (i / n) * span if n > 1 else t0
             if play_at < now - self._patch_stale_sec:
                 continue
-            self._lip_patch_queue.append(TimedPatch(patch, play_at))
+            self._frame_queue.append(TimedFrame(frame, play_at))
             kept += 1
 
         if kept == 0:
-            logger.info(
-                "Skipped %d stale lip patches (lag=%.0fms)",
-                n,
-                lag * 1000,
-            )
             return
 
-        self._lip_patch_queue = deque(
-            sorted(self._lip_patch_queue, key=lambda item: item.play_at)
+        self._frame_queue = deque(
+            sorted(self._frame_queue, key=lambda item: item.play_at)
         )
         logger.info(
-            "Queued %d/%d lip patches (lag=%.0fms, queue=%d)",
+            "Queued %d/%d driven frames (lag=%.0fms, queue=%d)",
             kept,
             n,
             lag * 1000,
-            len(self._lip_patch_queue),
+            len(self._frame_queue),
         )
 
     async def maybe_flush_utterance(self) -> None:
-        if not self._play_wav2lip:
+        if self._drive == "idle":
             return
         prepared = self._prepare_chunk()
         if prepared is None:
@@ -305,53 +327,64 @@ class AvatarPublisher:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             wav_path = f.name
         save_wav_int16(wav_path, chunk, 48000)
-        await self._wav_queue.put((wav_path, chunk_start, chunk_dur))
+        start_idx = self.loop.current_index
+        reset = self._reset_next_motion
+        self._reset_next_motion = False
+        await self._wav_queue.put((wav_path, chunk_start, chunk_dur, start_idx, reset))
 
-    async def _lipsync_worker(self) -> None:
-        if not self._play_wav2lip:
+    async def _drive_worker(self) -> None:
+        if self._drive == "idle":
             return
         loop = asyncio.get_running_loop()
         while True:
             item = await self._wav_queue.get()
             if item is None:
                 break
-            wav_path, chunk_start, chunk_dur = item
+            wav_path, chunk_start, chunk_dur, start_idx, reset_motion = item
             try:
-                if self.lipsync:
-                    patches = await loop.run_in_executor(
-                        self._lipsync_executor, self.lipsync.sync_utterance, wav_path
+                if self._lp is not None:
+                    frames = await loop.run_in_executor(
+                        self._drive_executor,
+                        self._lp.render_wav,
+                        wav_path,
+                        start_idx,
+                        reset_motion,
                     )
-                    if patches:
-                        self._enqueue_patches(patches, chunk_start, chunk_dur)
+                elif self._wav is not None:
+                    patches = await loop.run_in_executor(
+                        self._drive_executor, self._wav.sync_utterance, wav_path
+                    )
+                    frames = []
+                    box = self.loop.current_box()
+                    if box is not None:
+                        for p in patches:
+                            base = self.loop.frames[start_idx % len(self.loop.frames)]
+                            frames.append(composite_lip_patch(base.copy(), p, box))
+                else:
+                    frames = []
+                if frames:
+                    self._enqueue_frames(frames, chunk_start, chunk_dur)
             except Exception:
-                logger.exception("Lip sync failed")
+                logger.exception("Lip drive failed")
             finally:
                 Path(wav_path).unlink(missing_ok=True)
                 self._wav_queue.task_done()
 
     def _is_speaking(self) -> bool:
-        return time.monotonic() - self._last_audio_at < 0.45
+        return time.monotonic() - self._last_audio_at < 0.8
 
     def next_display_frame(self) -> np.ndarray:
-        base = self.loop.next_idle_frame()
-        if not self._use_composite or not self._lip_patch_queue:
-            return base
-
         now = time.monotonic()
         while (
-            self._lip_patch_queue
-            and self._lip_patch_queue[0].play_at < now - self._patch_stale_sec
+            self._frame_queue
+            and self._frame_queue[0].play_at < now - self._patch_stale_sec
         ):
-            self._lip_patch_queue.popleft()
+            self._frame_queue.popleft()
 
-        if not self._lip_patch_queue or self._lip_patch_queue[0].play_at > now:
-            return base
+        if self._frame_queue and self._frame_queue[0].play_at <= now:
+            return self._frame_queue.popleft().frame
 
-        timed = self._lip_patch_queue.popleft()
-        box = self.loop.current_box()
-        if box is not None and timed.patch.size > 0:
-            return composite_lip_patch(base, timed.patch, box)
-        return base
+        return self.loop.next_idle_frame()
 
     async def _utterance_worker(self) -> None:
         while True:
@@ -363,7 +396,7 @@ class AvatarPublisher:
 
     async def publish_forever(self, room: rtc.Room) -> None:
         utterance_task = asyncio.create_task(self._utterance_worker())
-        lipsync_task = asyncio.create_task(self._lipsync_worker())
+        drive_task = asyncio.create_task(self._drive_worker())
         interval = 1.0 / self.fps
         tick = 0
         try:
@@ -388,10 +421,10 @@ class AvatarPublisher:
                 await asyncio.sleep(interval)
         finally:
             utterance_task.cancel()
-            if self._play_wav2lip:
+            if self._drive != "idle":
                 await self._wav_queue.put(None)
-            lipsync_task.cancel()
-            self._lipsync_executor.shutdown(wait=False, cancel_futures=True)
+            drive_task.cancel()
+            self._drive_executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def consume_agent_audio(
@@ -413,24 +446,31 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     wav2lip_root = Path(os.environ.get("WAV2LIP_ROOT", "/workspace/Wav2Lip"))
 
     lipsync: Wav2LipEngine | None = None
+    liveportrait: LivePortraitEngine | None = None
     face_boxes = load_face_boxes(wav2lip_root)
     mouth_drive = os.environ.get("MOUTH_DRIVE", "idle").lower()
-    if mode == "wav2lip" and mouth_drive == "composite":
+
+    if mode == "liveportrait":
+        liveportrait = LivePortraitEngine(loop_path)
+        if liveportrait.is_ready():
+            logger.info("LivePortrait engine found at %s", liveportrait.flp_root)
+        else:
+            logger.warning(
+                "AVATAR_MODE=liveportrait but models missing — idle loop. "
+                "Run: bash setup_liveportrait.sh"
+            )
+            liveportrait = None
+            mode = "mock"
+    elif mode == "wav2lip" and mouth_drive == "composite":
         lipsync = Wav2LipEngine(loop_video_path=loop_path)
         if lipsync.is_ready():
             logger.info("Wav2Lip engine ready (legacy composite mode)")
             face_boxes = face_boxes or load_face_boxes(wav2lip_root)
-    elif mode == "liveportrait":
-        logger.warning(
-            "AVATAR_MODE=liveportrait is not wired yet — using idle loop. "
-            "Run setup_liveportrait.sh and test in webui first."
-        )
-        mode = "mock"
 
     loop = AudioReactiveLoop(loop_path, face_boxes)
 
-    if mode == "mock":
-        logger.info("Avatar mode: mock — idle loop only (recommended for demo)")
+    if mode == "mock" and liveportrait is None:
+        logger.info("Avatar mode: mock — idle loop (voice + chat)")
 
     room = rtc.Room()
     await room.connect(url, make_token(room_name))
@@ -451,7 +491,7 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     )
     logger.info("Publishing patient video track")
 
-    publisher = AvatarPublisher(loop, source, lipsync, fps)
+    publisher = AvatarPublisher(loop, source, fps, lipsync, liveportrait)
 
     def maybe_subscribe_agent_audio(
         track: rtc.Track,

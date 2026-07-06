@@ -16,7 +16,7 @@ fi
 
 cd "$FLP_ROOT"
 pip install -q -r requirements.txt
-pip install -q -U "huggingface_hub[cli]"
+pip install -q -U "huggingface_hub[cli]" onnxruntime-gpu
 
 mkdir -p "$CHECKPOINT_DIR"
 
