@@ -48,22 +48,28 @@ download_checkpoint() {
   echo "==> Downloading Wav2Lip GAN checkpoint (100–450MB)…"
   rm -f "$CHECKPOINT"
 
-  # Mirror 1: HuggingFace (public, no auth)
-  if curl -fL --retry 2 --retry-delay 3 --progress-bar -o "$CHECKPOINT" \
-    "https://huggingface.co/Nekochu/Wav2Lip/resolve/main/wav2lip_gan.pth"; then
-  # Mirror 2: alternate HF repo
-  elif curl -fL --retry 2 --retry-delay 3 --progress-bar -o "$CHECKPOINT" \
-    "https://huggingface.co/numz/wav2lip_studio/resolve/main/Wav2lip/wav2lip_gan.pth"; then
-  # Mirror 3: Google Drive (official README link)
-  else
-    echo "    curl failed — trying gdown (Google Drive)…"
-    pip install -q gdown
-    gdown "https://drive.google.com/uc?id=15G3U08c8xsCkOqQxE38Z2XXDnPcOptNk" \
-      -O "$CHECKPOINT" \
-      || gdown --folder "https://drive.google.com/drive/folders/1I-0dNLfFOSFwrfqjNa-SXuwaURHE5K4k" \
-        -O /tmp/wav2lip_ckpt \
-        && cp /tmp/wav2lip_ckpt/wav2lip_gan.pth "$CHECKPOINT"
-  fi
+  local urls=(
+    "https://huggingface.co/Nekochu/Wav2Lip/resolve/main/wav2lip_gan.pth"
+    "https://huggingface.co/numz/wav2lip_studio/resolve/main/Wav2lip/wav2lip_gan.pth"
+  )
+
+  for url in "${urls[@]}"; do
+    echo "    Trying $url"
+    if curl -fL --retry 2 --retry-delay 3 --progress-bar -o "$CHECKPOINT" "$url"; then
+      return 0
+    fi
+    rm -f "$CHECKPOINT"
+  done
+
+  echo "    curl failed — trying gdown (Google Drive)…"
+  pip install -q gdown
+  gdown "https://drive.google.com/uc?id=15G3U08c8xsCkOqQxE38Z2XXDnPcOptNk" \
+    -O "$CHECKPOINT" \
+    || {
+      gdown --folder "https://drive.google.com/drive/folders/1I-0dNLfFOSFwrfqjNa-SXuwaURHE5K4k" \
+        -O /tmp/wav2lip_ckpt
+      cp /tmp/wav2lip_ckpt/wav2lip_gan.pth "$CHECKPOINT"
+    }
 }
 
 if ! verify_checkpoint 2>/dev/null; then
