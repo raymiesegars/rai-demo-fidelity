@@ -148,7 +148,7 @@ class AvatarPublisher:
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.2"))
         self._first_chunk_sec = float(os.environ.get("LIP_SYNC_FIRST_CHUNK_SEC", "0.35"))
         self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "0.5"))
-        self._max_late_sec = float(os.environ.get("LIP_SYNC_MAX_LATE_SEC", "0.12"))
+        self._sync_window_sec = float(os.environ.get("LIP_SYNC_SYNC_WINDOW_SEC", "2.0"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
         self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
         self._active_agent: str | None = None
@@ -246,31 +246,29 @@ class AvatarPublisher:
             return
         now = time.monotonic()
         end = chunk_start + chunk_dur
-        if end < now - self._max_late_sec:
-            logger.warning(
-                "Dropped %d lip patches (audio finished %.0fms ago)",
-                n,
-                (now - end) * 1000,
-            )
-            return
+        lag = now - chunk_start
 
-        if now <= chunk_start:
-            start, span = chunk_start, chunk_dur
-        elif now < end:
-            # Audio still playing — squeeze lips into the time left for this chunk.
-            start, span = now, end - now
+        if lag <= self._sync_window_sec and now < end + 0.05:
+            if now <= chunk_start:
+                start, span = chunk_start, chunk_dur
+            else:
+                start, span = now, max(0.05, end - now)
         else:
+            logger.info(
+                "Wav2Lip lag %.1fs — playing %d patches immediately",
+                lag,
+                n,
+            )
             start, span = now, n / self.fps
 
         for i, patch in enumerate(patches):
             t = (i / n) * span if n > 1 else 0.0
             self._lip_patch_queue.append(TimedPatch(patch, start + t))
 
-        lag_ms = max(0.0, (now - chunk_start) * 1000)
         logger.info(
             "Queued %d lip patches (lag=%.0fms, queue=%d)",
             n,
-            lag_ms,
+            lag * 1000,
             len(self._lip_patch_queue),
         )
 
@@ -319,13 +317,7 @@ class AvatarPublisher:
             return base
 
         now = time.monotonic()
-        while (
-            self._lip_patch_queue
-            and self._lip_patch_queue[0].play_at < now - self._max_late_sec
-        ):
-            self._lip_patch_queue.popleft()
-
-        if not self._lip_patch_queue or now < self._lip_patch_queue[0].play_at:
+        if now < self._lip_patch_queue[0].play_at:
             return base
 
         timed = self._lip_patch_queue.popleft()

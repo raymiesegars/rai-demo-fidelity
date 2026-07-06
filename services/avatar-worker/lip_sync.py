@@ -8,6 +8,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import wave
 from pathlib import Path
 
@@ -169,10 +171,13 @@ class Wav2LipEngine:
         self._boxes_file: Path | None = None
         self._anchor_image: Path | None = None
         self._anchor_box: list[int] | None = None
+        self._daemon: subprocess.Popen[str] | None = None
+        self._daemon_lock = threading.Lock()
 
         if self.is_ready():
             ensure_wav2lip_patched(self.wav2lip_root)
             self._init_boxes_and_anchor()
+            self._ensure_daemon()
 
     def is_ready(self) -> bool:
         return (
@@ -216,48 +221,63 @@ class Wav2LipEngine:
             logger.info("Saved anchor frame %d → %s", anchor_idx, anchor_path)
         self._anchor_image = anchor_path
 
+    def _ensure_daemon(self) -> None:
+        if self._daemon is not None and self._daemon.poll() is None:
+            return
+        if self._anchor_image is None or self._anchor_box is None:
+            return
+
+        daemon_script = Path(__file__).resolve().parent / "wav2lip_daemon.py"
+        cfg = json.dumps(
+            {
+                "root": str(self.wav2lip_root),
+                "checkpoint": str(self.checkpoint),
+                "anchor": str(self._anchor_image),
+                "box": self._anchor_box,
+                "fps": float(os.environ.get("TARGET_FPS", "25")),
+                "batch_size": int(os.environ.get("WAV2LIP_BATCH_SIZE", "128")),
+            }
+        )
+        self._daemon = subprocess.Popen(
+            [sys.executable, str(daemon_script), cfg],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(self.wav2lip_root),
+        )
+        ready_line = self._daemon.stderr.readline()
+        if "ready" not in ready_line:
+            err = ready_line + (self._daemon.stderr.read(4000) if self._daemon.stderr else "")
+            raise RuntimeError(f"Wav2Lip daemon failed to start: {err}")
+        logger.info("Wav2Lip daemon ready (model loaded once)")
+
     def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
-        """Wav2Lip on a single anchor still — fast; returns lip-only patches."""
+        """Wav2Lip on anchor still via persistent daemon — returns lip-only patches."""
         if not self.is_ready() or self._anchor_image is None or self._anchor_box is None:
             raise RuntimeError("Wav2Lip not ready")
 
-        y1, y2, x1, x2 = self._anchor_box
-        with tempfile.TemporaryDirectory() as tmp:
-            out_mp4 = str(Path(tmp) / "lipsync.mp4")
-            cmd = [
-                "python",
-                str(self.inference_py),
-                "--checkpoint_path",
-                str(self.checkpoint),
-                "--face",
-                str(self._anchor_image),
-                "--audio",
-                audio_wav,
-                "--outfile",
-                out_mp4,
-                "--fps",
-                os.environ.get("TARGET_FPS", "25"),
-                "--static",
-                "True",
-                "--box",
-                str(y1),
-                str(y2),
-                str(x1),
-                str(x2),
-                "--wav2lip_batch_size",
-                "128",
-            ]
-            result = subprocess.run(
-                cmd,
-                cwd=str(self.wav2lip_root),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error("Wav2Lip stderr: %s", result.stderr[-2000:])
-                raise RuntimeError(f"Wav2Lip failed: {result.stderr[-500:]}")
+        with self._daemon_lock:
+            self._ensure_daemon()
+            assert self._daemon is not None
+            out_mp4 = tempfile.mktemp(suffix=".mp4")
+            job = json.dumps({"wav": audio_wav, "out": out_mp4})
+            t0 = time.monotonic()
+            self._daemon.stdin.write(job + "\n")
+            self._daemon.stdin.flush()
+            resp_line = self._daemon.stdout.readline()
+            if not resp_line:
+                raise RuntimeError("Wav2Lip daemon died")
+            resp = json.loads(resp_line)
+            if not resp.get("ok"):
+                raise RuntimeError(f"Wav2Lip failed: {resp.get('error', resp)}")
 
             frames = load_video_frames_rgba(out_mp4)
+            Path(out_mp4).unlink(missing_ok=True)
             patches = [extract_lip_patch(f, self._anchor_box) for f in frames]
-            logger.info("Wav2Lip produced %d lip patches (static anchor)", len(patches))
+            logger.info(
+                "Wav2Lip produced %d lip patches in %.2fs (daemon)",
+                len(patches),
+                time.monotonic() - t0,
+            )
             return patches
