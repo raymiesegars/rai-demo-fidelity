@@ -2,6 +2,7 @@
 # FasterLivePortrait + JoyVASA — real lip sync on Alan's loop video.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLP_ROOT="${FLP_ROOT:-/workspace/FasterLivePortrait}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-$FLP_ROOT/checkpoints}"
 
@@ -50,7 +51,7 @@ hf_download_repo TencentGameMate/chinese-hubert-base "$CHECKPOINT_DIR/chinese-hu
 
 echo ""
 echo "==> Verifying required files…"
-bash "$(dirname "$0")/verify_liveportrait.sh" || {
+bash "$SCRIPT_DIR/verify_liveportrait.sh" || {
   echo "ERROR: Setup incomplete — some model files are missing."
   exit 1
 }
