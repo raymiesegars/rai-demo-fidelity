@@ -34,7 +34,7 @@ class SpeechReactiveMouth:
         self._openness = 0.0
         self._attack = float(os.environ.get("MOUTH_ATTACK", "0.55"))
         self._decay = float(os.environ.get("MOUTH_DECAY", "0.22"))
-        self._max_stretch = float(os.environ.get("MOUTH_MAX_STRETCH", "0.20"))
+        self._max_stretch = float(os.environ.get("MOUTH_MAX_STRETCH", "0.26"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "400"))
         self._gap = float(os.environ.get("MOUTH_LIP_GAP", "0.35"))
@@ -57,14 +57,14 @@ class SpeechReactiveMouth:
         )
 
     def note_active_speaker(self) -> None:
-        self._speaker_until = time.monotonic() + 0.35
+        self._speaker_until = time.monotonic() + 0.45
 
     def update(self, energy: float) -> float:
         now = time.monotonic()
         if now < self._utterance_until:
-            target = 0.42 + 0.28 * (0.5 + 0.5 * math.sin(now * 13.0))
+            target = 0.50 + 0.35 * (0.5 + 0.5 * math.sin(now * 13.0))
         elif now < self._speaker_until:
-            target = 0.55
+            target = 0.62
         else:
             target = min(1.0, max(0.0, (energy - self._threshold) / self._sensitivity))
         rate = self._attack if target > self._openness else self._decay
@@ -72,7 +72,7 @@ class SpeechReactiveMouth:
         return self._openness
 
     def apply(self, frame: np.ndarray, box: list[int] | None) -> np.ndarray:
-        if box is None or self._openness < 0.04:
+        if box is None or self._openness < 0.02:
             return frame
 
         ly1, ly2, lx1, lx2 = reactive_mouth_rect(box)

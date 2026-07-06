@@ -326,6 +326,7 @@ class AvatarPublisher:
         duration = max(0.9, min(5.0, char_count * 0.038))
         self._reactive.start_utterance(duration)
         self._last_audio_at = time.monotonic()
+        logger.info("Mouth pulse %.1fs (%d chars)", duration, char_count)
 
     def note_agent_speaking(self) -> None:
         if self._reactive is None:
@@ -491,6 +492,7 @@ class AvatarPublisher:
 
         base = self.loop.next_idle_frame()
         if self._drive == "reactive" and self._reactive is not None:
+            self._reactive.update(self._last_energy)
             return self._reactive.apply(base, self.loop.current_box())
         return base
 
