@@ -34,18 +34,52 @@ def load_face_boxes(wav2lip_root: Path) -> list[list[int]] | None:
     return boxes if boxes else None
 
 
-def mouth_openness_score(frame: np.ndarray, box: list[int]) -> float:
+def pulse_mouth_region(
+    frame: np.ndarray, box: list[int], energy: float, smooth: float
+) -> np.ndarray:
+    """Stretch the lower face slightly with audio — same pose, visible mouth motion."""
+    out = frame.copy()
     y1, y2, x1, x2 = box
-    face = frame[y1:y2, x1:x2]
-    if face.size == 0:
-        return 0.0
-    mouth = face[int(face.shape[0] * 0.45) :, :]
-    gray = cv2.cvtColor(mouth, cv2.COLOR_RGBA2GRAY)
-    return float(np.std(gray) * 1.5 + np.mean(gray) * 0.05)
+    fh, fw = y2 - y1, x2 - x1
+    if fh < 20 or fw < 20:
+        return out
+
+    mouth_y1 = y1 + int(fh * 0.58)
+    mouth = out[mouth_y1:y2, x1:x2]
+    if mouth.size == 0:
+        return out
+
+    # Smooth energy → vertical mouth opening (subtle but visible)
+    open_amt = float(np.clip(smooth / 5000.0, 0.0, 1.0)) ** 0.8
+    scale_y = 1.0 + open_amt * 0.18
+    scale_x = 1.0 + open_amt * 0.04
+    new_h = max(4, int(mouth.shape[0] * scale_y))
+    new_w = max(4, int(mouth.shape[1] * scale_x))
+    warped = cv2.resize(mouth, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Paste centered on original mouth slot
+    cy = (mouth_y1 + y2) // 2
+    cx = (x1 + x2) // 2
+    y_start = cy - new_h // 2
+    x_start = cx - new_w // 2
+    y_end = y_start + new_h
+    x_end = x_start + new_w
+
+    y0 = max(0, y_start)
+    x0 = max(0, x_start)
+    y1p = min(out.shape[0], y_end)
+    x1p = min(out.shape[1], x_end)
+    wy0 = y0 - y_start
+    wx0 = x0 - x_start
+    wy1 = wy0 + (y1p - y0)
+    wx1 = wx0 + (x1p - x0)
+    if y1p > y0 and x1p > x0:
+        out[y0:y1p, x0:x1p] = warped[wy0:wy1, wx0:wx1]
+    return out
 
 
 class AudioReactiveLoop:
-    """Ping-pong idle loop; during speech, pick frames by audio energy vs mouth openness."""
+    """Ping-pong idle loop; during speech, pulse mouth region on the current pose."""
 
     def __init__(self, path: str, face_boxes: list[list[int]] | None = None) -> None:
         cap = cv2.VideoCapture(path)
@@ -67,21 +101,14 @@ class AudioReactiveLoop:
         self._direction = 1
         self.height, self.width = self.frames[0].shape[:2]
         self._smooth_energy = 0.0
-        self._speak_frame_idx = 0
+        self._face_boxes = face_boxes or []
+        self._mouth_drive = os.environ.get("MOUTH_DRIVE", "warp").lower()
 
-        self._openness_order: np.ndarray | None = None
-        if face_boxes and len(face_boxes) >= len(self.frames):
-            scores = [
-                mouth_openness_score(f, face_boxes[i % len(face_boxes)])
-                for i, f in enumerate(self.frames)
-            ]
-            self._openness_order = np.argsort(scores)
-            logger.info(
-                "Audio-reactive mouth drive ready (%d frames, openness mapped)",
-                len(self.frames),
-            )
+        if self._face_boxes and len(self._face_boxes) >= len(self.frames):
+            logger.info("Mouth pulse drive ready (%s, %d frames)", self._mouth_drive, len(self.frames))
         else:
-            logger.warning("No face boxes — using fast idle loop only while speaking")
+            logger.warning("No face boxes — idle loop only while speaking")
+            self._mouth_drive = "idle"
 
         logger.info("Loaded %d frames (%dx%d)", len(self.frames), self.width, self.height)
 
@@ -95,25 +122,19 @@ class AudioReactiveLoop:
         return frame
 
     def speaking_frame(self, energy: float) -> np.ndarray:
-        if self._openness_order is None:
-            steps = min(5, 2 + int(energy / 2000))
-            frame = self.next_idle_frame()
-            for _ in range(steps - 1):
-                frame = self.next_idle_frame()
-            return frame
+        self._smooth_energy = 0.6 * self._smooth_energy + 0.4 * energy
 
-        self._smooth_energy = 0.55 * self._smooth_energy + 0.45 * energy
-        # Map loudness → how open the mouth should look (wider range for visibility)
-        t = float(np.clip(self._smooth_energy / 3200.0, 0.0, 1.0))
-        t = t**0.65  # exaggerate mouth movement
-        rank = int(t * (len(self._openness_order) - 1))
-        target = int(self._openness_order[rank])
-        # Smooth frame transitions so it doesn't flicker
-        blend = 0.35
-        self._speak_frame_idx = int(
-            (1 - blend) * self._speak_frame_idx + blend * target
-        )
-        return self.frames[self._speak_frame_idx]
+        # Advance idle slowly during speech so body still breathes, head stays stable
+        if self._index % 3 == 0:
+            base = self.next_idle_frame()
+        else:
+            base = self.frames[self._index].copy()
+
+        if self._mouth_drive != "warp" or not self._face_boxes:
+            return base
+
+        box = self._face_boxes[self._index % len(self._face_boxes)]
+        return pulse_mouth_region(base, box, energy, self._smooth_energy)
 
 
 def make_token(room: str, identity: str = "avatar-patient") -> str:
@@ -174,8 +195,8 @@ class AvatarPublisher:
 
         if lipsync and not self._play_wav2lip:
             logger.info(
-                "Wav2Lip batch playback OFF — using real-time audio-reactive mouth "
-                "(set WAV2LIP_PLAYBACK=1 to enable delayed batch replay)"
+                "Mouth drive: %s (real-time). Wav2Lip batch playback is off.",
+                loop._mouth_drive,
             )
 
     def set_active_agent(self, identity: str) -> None:
