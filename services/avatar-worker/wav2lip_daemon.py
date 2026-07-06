@@ -66,6 +66,7 @@ def main() -> None:
     sys.path.insert(0, str(root))
 
     import cv2
+    import numpy as np
     import torch
 
     import audio  # noqa: Wav2Lip local module
