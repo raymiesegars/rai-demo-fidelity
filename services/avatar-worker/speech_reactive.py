@@ -9,9 +9,28 @@ import time
 import cv2
 import numpy as np
 
-from composite import lip_rect
-
 logger = logging.getLogger("avatar-worker")
+
+
+def mouth_roi(box: list[int]) -> tuple[int, int, int, int]:
+    """Full mouth region inside the face box (upper + lower lip + jaw margin).
+
+    Face-detector boxes span forehead→chin. Mouth sits in the lower third:
+    ~68–92% down the box, ~24–76% across (typical adult proportions).
+    """
+    y1, y2, x1, x2 = box
+    fh, fw = y2 - y1, x2 - x1
+    y_shift = float(os.environ.get("MOUTH_RECT_Y_SHIFT", "0.0"))
+    x_left = float(os.environ.get("MOUTH_RECT_X_LEFT", "0.24"))
+    x_right = float(os.environ.get("MOUTH_RECT_X_RIGHT", "0.76"))
+    top = float(os.environ.get("MOUTH_RECT_TOP", "0.68")) + y_shift
+    bottom = float(os.environ.get("MOUTH_RECT_BOTTOM", "0.92")) + y_shift
+
+    ly1 = y1 + int(fh * min(top, bottom - 0.06))
+    ly2 = y1 + int(fh * max(bottom, top + 0.06))
+    lx1 = x1 + int(fw * x_left)
+    lx2 = x1 + int(fw * x_right)
+    return ly1, ly2, lx1, lx2
 
 
 class SpeechReactiveMouth:
@@ -23,10 +42,11 @@ class SpeechReactiveMouth:
         self._last_voice_at = 0.0
         self._attack = float(os.environ.get("MOUTH_ATTACK", "0.68"))
         self._decay = float(os.environ.get("MOUTH_DECAY", "0.38"))
-        self._max_stretch = float(os.environ.get("MOUTH_MAX_STRETCH", "0.32"))
+        self._open_amount = float(os.environ.get("MOUTH_OPEN_AMOUNT", "1.0"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "350"))
         self._silence_cutoff = float(os.environ.get("MOUTH_SILENCE_CUTOFF_SEC", "0.10"))
+        self._lip_line = float(os.environ.get("MOUTH_LIP_LINE", "0.40"))
         self._logged_roi = False
 
     @property
@@ -40,7 +60,6 @@ class SpeechReactiveMouth:
         self._logged_roi = False
 
     def arm_reply(self) -> None:
-        """Text reply arrived — mouth waits for TTS audio (no long timer)."""
         self._last_voice_at = time.monotonic()
 
     def note_active_speaker(self) -> None:
@@ -67,13 +86,13 @@ class SpeechReactiveMouth:
         if box is None or self._openness < 0.04:
             return frame
 
-        ly1, ly2, lx1, lx2 = lip_rect(box)
+        ly1, ly2, lx1, lx2 = mouth_roi(box)
         ly1 = max(0, ly1)
         lx1 = max(0, lx1)
         ly2 = min(frame.shape[0], ly2)
         lx2 = min(frame.shape[1], lx2)
         w, h = lx2 - lx1, ly2 - ly1
-        if w < 8 or h < 5:
+        if w < 10 or h < 8:
             return frame
 
         if self._openness > 0.35 and not self._logged_roi:
@@ -87,56 +106,123 @@ class SpeechReactiveMouth:
             )
             self._logged_roi = True
 
-        o = self._openness
+        o = self._openness * self._open_amount
         out = frame.copy()
         orig = out[ly1:ly2, lx1:lx2, :3].astype(np.float32)
-        patch = orig.copy()
-
-        seam = max(1, int(h * 0.42))
-        drop = max(2, int(h * 0.24 * o))
-        lower = patch[seam:].copy()
-        lower_h = lower.shape[0]
-
-        if lower_h >= 2:
-            warped_h = max(2, int(lower_h * (1.0 + o * self._max_stretch)))
-            warped = cv2.resize(lower, (w, warped_h), interpolation=cv2.INTER_LINEAR)
-            result = patch.copy()
-            result[:seam] = patch[:seam]
-            fit_end = min(h, seam + drop + warped_h)
-            fit_h = fit_end - (seam + drop)
-            if fit_h > 0:
-                result[seam + drop : seam + drop + fit_h] = cv2.resize(
-                    warped, (w, fit_h)
-                )
-            patch = result
-
-        mask = _mouth_mask(h, w)
-        blended = patch * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
+        warped = _warp_mouth_open(orig, o, self._lip_line)
+        mask = _full_mouth_mask(h, w)
+        blended = warped * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
         out[ly1:ly2, lx1:lx2, :3] = np.clip(blended, 0, 255).astype(np.uint8)
 
         if os.environ.get("MOUTH_DEBUG", "0") == "1":
+            lip_y = ly1 + int(h * self._lip_line)
             cv2.rectangle(out, (lx1, ly1), (lx2, ly2), (0, 255, 0), 1)
-            cx, cy = w // 2, int(h * 0.52)
-            cv2.ellipse(
-                out,
-                (lx1 + cx, ly1 + cy),
-                (max(3, int(w * 0.48)), max(2, int(h * 0.40))),
-                0,
-                0,
-                360,
-                (0, 0, 255),
-                1,
-            )
+            cv2.line(out, (lx1, lip_y), (lx2, lip_y), (0, 255, 255), 1)
+            _draw_debug_lips(out, lx1, ly1, w, h)
 
         return out
 
 
-def _mouth_mask(h: int, w: int) -> np.ndarray:
-    """Wide lip mask covering most of the mouth ROI."""
+def _warp_mouth_open(roi: np.ndarray, openness: float, lip_line_frac: float) -> np.ndarray:
+    """Separate upper and lower lip with a smooth displacement field (no seam strip)."""
+    h, w = roi.shape[:2]
+    lip_y = lip_line_frac * h
+    upper_lift = max(0.5, h * 0.05 * openness)
+    lower_drop = max(1.0, h * 0.20 * openness)
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx = (w - 1) * 0.5
+    falloff = 1.0 - np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0) ** 1.25
+
+    map_y = yy.copy()
+    map_x = xx.copy()
+
+    above = yy < lip_y
+    below = ~above
+    t_below = np.clip((yy - lip_y) / max(1.0, h - lip_y), 0.0, 1.0)
+
+    map_y[above] = yy[above] - upper_lift * falloff[above]
+    map_y[below] = yy[below] + lower_drop * falloff[below] * t_below[below]
+
+    warped = cv2.remap(
+        roi,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT101,
+    )
+
+    if openness > 0.12:
+        cavity = _mouth_cavity(h, w, lip_y, openness)
+        dark = np.array([30, 20, 24], dtype=np.float32)
+        warped = warped * (1.0 - cavity[:, :, np.newaxis]) + dark * cavity[:, :, np.newaxis]
+
+    return warped
+
+
+def _mouth_cavity(h: int, w: int, lip_y: float, openness: float) -> np.ndarray:
     mask = np.zeros((h, w), dtype=np.float32)
     cx = w // 2
-    cy = int(h * 0.52)
-    axes = (max(4, int(w * 0.48)), max(3, int(h * 0.40)))
-    cv2.ellipse(mask, (cx, cy), axes, 0, 0, 360, 1.0, -1)
-    blur = max(3, min(h, w) // 7) | 1
+    cy = int(lip_y)
+    axes = (max(2, int(w * 0.18 * openness)), max(1, int(h * 0.07 * openness)))
+    cv2.ellipse(mask, (cx, cy), axes, 0, 0, 360, min(0.5, openness * 0.55), -1)
+    blur = 5 if min(h, w) > 12 else 3
     return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
+
+
+def _full_mouth_mask(h: int, w: int) -> np.ndarray:
+    """Cover upper lip, lower lip, and mouth corners — not a thin upper-lip strip."""
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    # Upper lip (wide flat arc).
+    cv2.ellipse(
+        mask,
+        (w // 2, int(h * 0.32)),
+        (max(4, int(w * 0.46)), max(3, int(h * 0.24))),
+        0,
+        0,
+        360,
+        1.0,
+        -1,
+    )
+    # Lower lip + chin margin.
+    cv2.ellipse(
+        mask,
+        (w // 2, int(h * 0.66)),
+        (max(4, int(w * 0.48)), max(3, int(h * 0.30))),
+        0,
+        0,
+        360,
+        1.0,
+        -1,
+    )
+    # Solid core so corners and full width move together.
+    y1, y2 = int(h * 0.12), int(h * 0.90)
+    x1, x2 = int(w * 0.06), int(w * 0.94)
+    mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], 0.92)
+
+    blur = max(3, min(h, w) // 8) | 1
+    return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
+
+
+def _draw_debug_lips(out: np.ndarray, ox: int, oy: int, w: int, h: int) -> None:
+    cv2.ellipse(
+        out,
+        (ox + w // 2, oy + int(h * 0.32)),
+        (max(3, int(w * 0.46)), max(2, int(h * 0.24))),
+        0,
+        0,
+        360,
+        (255, 0, 0),
+        1,
+    )
+    cv2.ellipse(
+        out,
+        (ox + w // 2, oy + int(h * 0.66)),
+        (max(3, int(w * 0.48)), max(2, int(h * 0.30))),
+        0,
+        0,
+        360,
+        (0, 0, 255),
+        1,
+    )
