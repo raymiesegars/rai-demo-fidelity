@@ -53,7 +53,8 @@ class Wav2LipEngine:
         wav2lip_root: str | None = None,
         checkpoint: str | None = None,
     ) -> None:
-        self.loop_video_path = loop_video_path
+        # Must be absolute — Wav2Lip subprocess runs with cwd=WAV2LIP_ROOT.
+        self.loop_video_path = str(Path(loop_video_path).resolve())
         self.wav2lip_root = Path(
             wav2lip_root or os.environ.get("WAV2LIP_ROOT", "/workspace/Wav2Lip")
         )
@@ -107,7 +108,11 @@ class Wav2LipEngine:
                 "--wav2lip_batch_size",
                 "64",
             ]
-            logger.info("Running Wav2Lip lip sync…")
+            logger.info(
+                "Running Wav2Lip lip sync (face=%s, audio=%s)…",
+                self.loop_video_path,
+                audio_wav,
+            )
             result = subprocess.run(
                 cmd,
                 cwd=str(self.wav2lip_root),

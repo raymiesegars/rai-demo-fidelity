@@ -92,10 +92,13 @@ class AvatarPublisher:
         self._lipsync_queue: deque[np.ndarray] = deque()
         self._audio_buffer: list[np.ndarray] = []
         self._last_audio_at = 0.0
+        self._last_speech_at = 0.0
         self._last_energy = 0.0
         self._processing = False
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.45"))
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.35"))
+        self._max_utterance_sec = float(os.environ.get("MAX_UTTERANCE_SEC", "12"))
+        self._speech_threshold = float(os.environ.get("SPEECH_ENERGY_THRESHOLD", "800"))
         self._subscribed_audio_sids: set[str] = set()
 
     def push_lipsync_frames(self, frames: list[np.ndarray]) -> None:
@@ -105,19 +108,36 @@ class AvatarPublisher:
         if pcm.size == 0:
             return
         pcm = pcm.astype(np.int16)
+        energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+        self._last_energy = energy
+        # Agent tracks include silent frames; only buffer actual speech.
+        if energy < self._speech_threshold:
+            return
+        now = time.monotonic()
         self._audio_buffer.append(pcm)
-        self._last_audio_at = time.monotonic()
-        self._last_energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+        self._last_speech_at = now
+        self._last_audio_at = now
 
     async def maybe_flush_utterance(self) -> None:
         if self._processing or not self._audio_buffer:
             return
-        if time.monotonic() - self._last_audio_at < self._silence_seconds:
-            return
 
         samples = np.concatenate(self._audio_buffer)
-        self._audio_buffer.clear()
         duration = len(samples) / 48000
+        silence_elapsed = time.monotonic() - self._last_speech_at
+        force_chunk = duration >= self._max_utterance_sec
+        if not force_chunk and silence_elapsed < self._silence_seconds:
+            return
+
+        if force_chunk:
+            max_samples = int(self._max_utterance_sec * 48000)
+            chunk = samples[:max_samples]
+            remainder = samples[max_samples:]
+            self._audio_buffer = [remainder] if len(remainder) else []
+            samples = chunk
+            duration = len(samples) / 48000
+        else:
+            self._audio_buffer.clear()
         if duration < self._min_utterance_sec:
             return
         if not self.lipsync or not self.lipsync.is_ready():
@@ -207,7 +227,7 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     if mode == "wav2lip":
         lipsync = Wav2LipEngine(loop_video_path=loop_path)
         if lipsync.is_ready():
-            logger.info("Wav2Lip lip sync enabled")
+            logger.info("Wav2Lip lip sync enabled (face=%s)", lipsync.loop_video_path)
         else:
             logger.warning(
                 "AVATAR_MODE=wav2lip but Wav2Lip not installed. "
@@ -288,7 +308,7 @@ async def main() -> None:
     fps = int(os.environ.get("TARGET_FPS", "25"))
     mode = os.environ.get("AVATAR_MODE", "mock")
 
-    resolved = Path(loop_path)
+    resolved = Path(loop_path).resolve()
     if not resolved.is_file():
         raise FileNotFoundError(resolved)
 
