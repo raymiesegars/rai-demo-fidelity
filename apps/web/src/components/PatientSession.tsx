@@ -27,7 +27,10 @@ type SessionStats = {
 
 function SingleAgentAudio() {
   const tracks = useTracks(
-    [{ source: Track.Source.Microphone, withPlaceholder: false }],
+    [
+      { source: Track.Source.Microphone, withPlaceholder: false },
+      { source: Track.Source.Unknown, withPlaceholder: false },
+    ],
     { onlySubscribed: true },
   );
 

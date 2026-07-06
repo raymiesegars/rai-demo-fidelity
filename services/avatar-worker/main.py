@@ -255,24 +255,34 @@ class AvatarPublisher:
     ) -> None:
         if self._users_in_room == 0:
             return
-        if not force and self._agent_locked and self._active_agent:
-            return
         sid = track.sid
-        if sid in self._subscribed_audio_sids and self._active_agent == identity:
+        if (
+            not force
+            and self._agent_locked
+            and self._active_agent
+            and self._active_agent != identity
+        ):
             return
-        self.set_active_agent(identity)
+        self.set_active_agent(identity, force=force)
         if sid in self._subscribed_audio_sids:
             return
         self._subscribed_audio_sids.add(sid)
         logger.info("Agent audio track: %s", identity)
         asyncio.create_task(consume_agent_audio(track, self, identity))
 
-    def set_active_agent(self, identity: str) -> None:
+    def set_active_agent(self, identity: str, *, force: bool = False) -> None:
         if self._active_agent == identity:
             return
-        if self._agent_locked and self._active_agent is not None:
+        if not force and self._agent_locked and self._active_agent is not None:
             return
-        logger.info("Active agent for lip sync: %s", identity)
+        if self._active_agent and self._active_agent != identity:
+            logger.info(
+                "Switching lip sync agent: %s -> %s",
+                self._active_agent,
+                identity,
+            )
+        else:
+            logger.info("Active agent for lip sync: %s", identity)
         self._active_agent = identity
         self._agent_locked = True
         self._audio_buffer.clear()
@@ -635,7 +645,7 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
         identity = publisher.newest_agent_identity(room)
         if identity != participant.identity:
             return
-        publisher.bind_agent_audio(track, participant.identity)
+        publisher.bind_agent_audio(track, participant.identity, force=True)
 
     for participant in room.remote_participants.values():
         if participant.identity.startswith("user-"):

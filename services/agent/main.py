@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -65,6 +66,8 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=cartesia.TTS(voice=voice_id),
     )
     superseded = False
+    started_at = time.monotonic()
+    local_identity = ""
 
     def is_agent_identity(identity: str) -> bool:
         return identity.startswith("agent-")
@@ -85,7 +88,10 @@ async def entrypoint(ctx: JobContext) -> None:
     def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
         if not is_agent_identity(participant.identity):
             return
-        if participant.identity == ctx.room.local_participant.identity:
+        if participant.identity == local_identity:
+            return
+        # Only stale workers retire when someone new joins — not the worker that just started.
+        if time.monotonic() - started_at < 5.0:
             return
         asyncio.create_task(
             retire(f"newer agent joined ({participant.identity})")
@@ -126,6 +132,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     agent = PatientAgent()
     await session.start(agent=agent, room=ctx.room)
+    local_identity = ctx.room.local_participant.identity
 
     @ctx.room.on("data_received")
     def on_data(data: rtc.DataPacket) -> None:
