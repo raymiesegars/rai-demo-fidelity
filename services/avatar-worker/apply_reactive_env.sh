@@ -23,17 +23,15 @@ set_kv ENERGY_MOUTH 0
 set_kv ANIMATION_ENERGY_THRESHOLD 8
 set_kv MOUTH_SENSITIVITY 350
 set_kv MOUTH_OPEN_AMOUNT 1.15
-set_kv MOUTH_UPPER_LIFT 0.10
-set_kv MOUTH_LOWER_DROP 0.36
+set_kv MOUTH_UPPER_LIFT 0.09
+set_kv MOUTH_LOWER_DROP 0.32
 set_kv MOUTH_CORNER_MOVE 0.55
-set_kv MOUTH_UPPER_DEPTH 0.38
-set_kv MOUTH_LOWER_DEPTH 0.28
-set_kv MOUTH_LIP_LINE 0.44
-set_kv MOUTH_RECT_BOTTOM 0.84
+set_kv MOUTH_CHIN_DAMP_START 0.78
+set_kv MOUTH_LIP_LINE 0.40
+set_kv MOUTH_RECT_BOTTOM 0.90
 set_kv MOUTH_ATTACK 0.68
 set_kv MOUTH_DECAY 0.38
 set_kv MOUTH_SILENCE_CUTOFF_SEC 0.10
-set_kv MOUTH_LIP_LINE 0.40
 set_kv MOUTH_RECT_X_LEFT 0.24
 set_kv MOUTH_RECT_X_RIGHT 0.76
 set_kv MOUTH_RECT_TOP 0.68
@@ -49,4 +47,4 @@ echo "Updated $ENV_FILE for speech-reactive mode:"
 grep -E '^(AVATAR_MODE|MOUTH_|ENERGY_|ANIMATION_)' "$ENV_FILE"
 echo ""
 echo "Start: export \$(grep -v '^#' .env | xargs) && python main.py"
-echo "Debug: export MOUTH_DEBUG=1 — green=ROI, cyan=lip line, red/blue=upper/lower lip"
+echo "Debug: export MOUTH_DEBUG=1 — green=ROI, cyan=lip line, orange=chin cutoff, red/blue=lips"
