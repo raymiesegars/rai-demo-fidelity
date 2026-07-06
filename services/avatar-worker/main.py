@@ -306,9 +306,6 @@ class AvatarPublisher:
         if self._drive == "reactive" and self._reactive is not None:
             self._reactive.update(energy)
             if energy >= self._animation_threshold:
-                self._reactive.extend_speech(
-                    float(os.environ.get("MOUTH_AUDIO_EXTEND_SEC", "0.30"))
-                )
                 self._last_audio_at = now
             return
         if energy >= self._animation_threshold:
@@ -326,13 +323,9 @@ class AvatarPublisher:
     def pulse_mouth(self, char_count: int) -> None:
         if self._reactive is None:
             return
-        # ~14 chars/sec TTS + small buffer so animation outlasts audio slightly.
-        per_char = float(os.environ.get("MOUTH_SEC_PER_CHAR", "0.068"))
-        pad = float(os.environ.get("MOUTH_UTTERANCE_PAD_SEC", "0.55"))
-        duration = max(1.1, min(12.0, char_count * per_char + pad))
-        self._reactive.start_utterance(duration)
+        self._reactive.arm_reply()
         self._last_audio_at = time.monotonic()
-        logger.info("Mouth pulse %.1fs (%d chars)", duration, char_count)
+        logger.info("Mouth armed for reply (%d chars) — syncing to live audio", char_count)
 
     def note_agent_speaking(self) -> None:
         if self._reactive is None:

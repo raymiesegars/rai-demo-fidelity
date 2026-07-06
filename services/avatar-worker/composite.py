@@ -14,12 +14,14 @@ def lip_rect(box: list[int]) -> tuple[int, int, int, int]:
     fh, fw = y2 - y1, x2 - x1
     # Nudge up via env (negative = higher on face)
     y_shift = float(os.environ.get("LIP_RECT_Y_SHIFT", "-0.04"))
-    top = 0.66 + y_shift
-    bottom = 0.84 + y_shift
+    x_left = float(os.environ.get("LIP_RECT_X_LEFT", "0.30"))
+    x_right = float(os.environ.get("LIP_RECT_X_RIGHT", "0.70"))
+    top = float(os.environ.get("LIP_RECT_TOP", "0.64")) + y_shift
+    bottom = float(os.environ.get("LIP_RECT_BOTTOM", "0.86")) + y_shift
     ly1 = y1 + int(fh * top)
     ly2 = y1 + int(fh * bottom)
-    lx1 = x1 + int(fw * 0.40)
-    lx2 = x1 + int(fw * 0.60)
+    lx1 = x1 + int(fw * x_left)
+    lx2 = x1 + int(fw * x_right)
     return ly1, ly2, lx1, lx2
 
 
