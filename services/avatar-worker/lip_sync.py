@@ -14,6 +14,9 @@ import numpy as np
 
 logger = logging.getLogger("lip-sync")
 
+# Official wav2lip_gan.pth is ~139 MB; partial downloads are usually a few KB.
+CHECKPOINT_MIN_BYTES = 130_000_000
+
 
 def save_wav_int16(path: str, samples: np.ndarray, sample_rate: int = 48000) -> None:
     """Save mono int16 PCM to WAV."""
@@ -44,6 +47,23 @@ def load_video_frames_rgba(path: str) -> list[np.ndarray]:
     ]
 
 
+def checkpoint_is_valid(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    size = path.stat().st_size
+    if size < CHECKPOINT_MIN_BYTES:
+        logger.warning("Checkpoint too small (%d bytes) — likely corrupt download", size)
+        return False
+    try:
+        import torch
+
+        torch.load(str(path), map_location="cpu", weights_only=False)
+        return True
+    except Exception as exc:
+        logger.warning("Checkpoint failed torch.load: %s", exc)
+        return False
+
+
 class Wav2LipEngine:
     """Runs Wav2Lip inference via cloned repo on RunPod."""
 
@@ -70,7 +90,7 @@ class Wav2LipEngine:
     def is_ready(self) -> bool:
         return (
             self.inference_py.is_file()
-            and self.checkpoint.is_file()
+            and checkpoint_is_valid(self.checkpoint)
             and Path(self.loop_video_path).is_file()
         )
 
@@ -78,9 +98,10 @@ class Wav2LipEngine:
         """Return lip-synced frames as RGBA numpy arrays."""
         if not self.is_ready():
             raise RuntimeError(
-                "Wav2Lip not installed. Run setup_wav2lip.sh on the RunPod pod. "
-                f"Missing: inference={self.inference_py.is_file()}, "
-                f"checkpoint={self.checkpoint.is_file()}"
+                "Wav2Lip not ready. Re-run: bash setup_wav2lip.sh "
+                "(checkpoint may be corrupt — delete checkpoints/wav2lip_gan.pth first). "
+                f"inference={self.inference_py.is_file()}, "
+                f"checkpoint={checkpoint_is_valid(self.checkpoint)}"
             )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,6 +143,9 @@ class Wav2LipEngine:
             if result.returncode != 0:
                 logger.error("Wav2Lip stderr: %s", result.stderr[-2000:])
                 raise RuntimeError(f"Wav2Lip failed: {result.stderr[-500:]}")
+
+            if not Path(out_mp4).is_file():
+                raise RuntimeError("Wav2Lip produced no output video")
 
             frames = load_video_frames_rgba(out_mp4)
             logger.info("Wav2Lip produced %d frames", len(frames))

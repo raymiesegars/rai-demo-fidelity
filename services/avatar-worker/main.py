@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
+from concurrent.futures import ThreadPoolExecutor
 import os
 import tempfile
 import time
@@ -99,7 +98,13 @@ class AvatarPublisher:
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.35"))
         self._max_utterance_sec = float(os.environ.get("MAX_UTTERANCE_SEC", "12"))
         self._speech_threshold = float(os.environ.get("SPEECH_ENERGY_THRESHOLD", "800"))
+        self._animation_threshold = float(
+            os.environ.get("ANIMATION_ENERGY_THRESHOLD", "150")
+        )
         self._subscribed_audio_sids: set[str] = set()
+        self._lipsync_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="wav2lip"
+        )
 
     def push_lipsync_frames(self, frames: list[np.ndarray]) -> None:
         self._lipsync_queue.extend(frames)
@@ -110,13 +115,16 @@ class AvatarPublisher:
         pcm = pcm.astype(np.int16)
         energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
         self._last_energy = energy
-        # Agent tracks include silent frames; only buffer actual speech.
+        if energy >= self._animation_threshold:
+            self._last_audio_at = time.monotonic()
+        # Agent tracks include silent frames; only buffer actual speech for Wav2Lip.
         if energy < self._speech_threshold:
             return
         now = time.monotonic()
         self._audio_buffer.append(pcm)
         self._last_speech_at = now
-        self._last_audio_at = now
+        if self._last_audio_at < now:
+            self._last_audio_at = now
 
     async def maybe_flush_utterance(self) -> None:
         if self._processing or not self._audio_buffer:
@@ -154,7 +162,7 @@ class AvatarPublisher:
             save_wav_int16(wav_path, samples, 48000)
             logger.info("Lip-syncing %.2fs of agent audio…", duration)
             frames = await asyncio.get_running_loop().run_in_executor(
-                None, self.lipsync.sync_utterance, wav_path
+                self._lipsync_executor, self.lipsync.sync_utterance, wav_path
             )
             Path(wav_path).unlink(missing_ok=True)
             if frames:
@@ -191,19 +199,31 @@ class AvatarPublisher:
             return frame
         return self.loop.next_frame()
 
+    async def _utterance_worker(self) -> None:
+        while True:
+            try:
+                await self.maybe_flush_utterance()
+            except Exception:
+                logger.exception("Utterance worker error")
+            await asyncio.sleep(0.1)
+
     async def publish_forever(self, room: rtc.Room) -> None:
+        worker = asyncio.create_task(self._utterance_worker())
         interval = 1.0 / self.fps
-        while room.isconnected():
-            await self.maybe_flush_utterance()
-            rgba = self.next_display_frame()
-            frame = rtc.VideoFrame(
-                self.loop.width,
-                self.loop.height,
-                rtc.VideoBufferType.RGBA,
-                rgba.tobytes(),
-            )
-            self.source.capture_frame(frame)
-            await asyncio.sleep(interval)
+        try:
+            while room.isconnected():
+                rgba = self.next_display_frame()
+                frame = rtc.VideoFrame(
+                    self.loop.width,
+                    self.loop.height,
+                    rtc.VideoBufferType.RGBA,
+                    rgba.tobytes(),
+                )
+                self.source.capture_frame(frame)
+                await asyncio.sleep(interval)
+        finally:
+            worker.cancel()
+            self._lipsync_executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def consume_agent_audio(
@@ -230,8 +250,8 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
             logger.info("Wav2Lip lip sync enabled (face=%s)", lipsync.loop_video_path)
         else:
             logger.warning(
-                "AVATAR_MODE=wav2lip but Wav2Lip not installed. "
-                "Run: bash setup_wav2lip.sh — idle loop only until then."
+                "AVATAR_MODE=wav2lip but Wav2Lip not ready. "
+                "Run: rm /workspace/Wav2Lip/checkpoints/wav2lip_gan.pth && bash setup_wav2lip.sh"
             )
     elif mode != "mock":
         logger.warning("Unknown AVATAR_MODE=%s, using mock loop", mode)
@@ -243,7 +263,15 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     source = rtc.VideoSource(loop.width, loop.height)
     track = rtc.LocalVideoTrack.create_video_track("patient-video", source)
     await room.local_participant.publish_track(
-        track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
+        track,
+        rtc.TrackPublishOptions(
+            source=rtc.TrackSource.SOURCE_CAMERA,
+            simulcast=False,
+            video_encoding=rtc.VideoEncoding(
+                max_bitrate=4_000_000,
+                max_framerate=float(fps),
+            ),
+        ),
     )
     logger.info("Publishing patient video track")
 

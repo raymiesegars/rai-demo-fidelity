@@ -327,7 +327,7 @@ function SessionPanel({
 }
 
 export default function PatientSession() {
-  const [room] = useState(() => new Room({ adaptiveStream: true }));
+  const [room] = useState(() => new Room({ adaptiveStream: false, dynacast: false }));
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);

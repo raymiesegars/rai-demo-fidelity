@@ -114,7 +114,17 @@ async def entrypoint(ctx: JobContext) -> None:
             return
 
         logger.info("User text: %s", user_text[:120])
-        session.generate_reply(user_input=user_text, input_modality="text")
+
+        def safe_reply() -> None:
+            try:
+                session.generate_reply(user_input=user_text, input_modality="text")
+            except RuntimeError as exc:
+                if "isn't running" in str(exc):
+                    logger.warning("Ignoring message — agent session not running")
+                else:
+                    raise
+
+        safe_reply()
 
     logger.info("Patient agent ready in room %s", ctx.room.name)
 
