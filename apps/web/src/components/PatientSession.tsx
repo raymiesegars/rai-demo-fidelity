@@ -169,15 +169,16 @@ function SessionPanel({
   useEffect(() => {
     const onData = (
       payload: Uint8Array,
-      participant?: { identity: string },
+      _participant?: { identity: string },
       _kind?: unknown,
       topic?: string,
     ) => {
-      if (topic !== "agent_reply") return;
+      if (topic !== "agent_reply" && topic !== "agent_error") return;
       try {
         const data = JSON.parse(new TextDecoder().decode(payload)) as {
           text?: string;
           charCount?: number;
+          type?: string;
         };
         if (data.text) {
           const replyText = data.text;
@@ -185,11 +186,11 @@ function SessionPanel({
             ...prev,
             {
               id: crypto.randomUUID(),
-              role: "patient" as const,
-              text: replyText,
+              role: topic === "agent_error" ? "system" : ("patient" as const),
+              text: topic === "agent_error" ? `⚠ ${replyText}` : replyText,
             },
           ]);
-          if (data.charCount) {
+          if (topic === "agent_reply" && data.charCount) {
             setStats((s) => ({
               turnCount: s.turnCount + 1,
               ttsCharacters: s.ttsCharacters + data.charCount!,

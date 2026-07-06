@@ -49,25 +49,38 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=cartesia.TTS(voice=voice_id),
     )
 
+    async def publish_to_client(payload: dict) -> None:
+        await ctx.room.local_participant.publish_data(
+            json.dumps(payload).encode(),
+            reliable=True,
+            topic="agent_reply" if payload.get("type") != "error" else "agent_error",
+        )
+
     @session.on("conversation_item_added")
     def on_conversation_item(ev: ConversationItemAddedEvent) -> None:
         item = ev.item
-        if item.role != "assistant":
+        role = getattr(item, "role", None)
+        if role != "assistant":
             return
-        text = item.text_content
+        text = getattr(item, "text_content", None) or ""
         if not text:
             return
 
-        payload = json.dumps(
-            {"text": text, "charCount": len(text)}
-        ).encode()
+        asyncio.create_task(
+            publish_to_client({"text": text, "charCount": len(text)})
+        )
 
-        async def publish() -> None:
-            await ctx.room.local_participant.publish_data(
-                payload, reliable=True, topic="agent_reply"
+    @session.on("error")
+    def on_session_error(ev: object) -> None:
+        err = getattr(ev, "error", ev)
+        msg = str(err)
+        if "insufficient_quota" in msg or "429" in msg:
+            msg = (
+                "OpenAI quota exceeded. Add billing at platform.openai.com "
+                "or update OPENAI_API_KEY in services/agent/.env"
             )
-
-        asyncio.create_task(publish())
+        logger.error("Agent session error: %s", msg)
+        asyncio.create_task(publish_to_client({"type": "error", "text": msg}))
 
     agent = PatientAgent()
     await session.start(agent=agent, room=ctx.room)
