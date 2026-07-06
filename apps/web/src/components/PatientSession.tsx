@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  RoomAudioRenderer,
+  AudioTrack,
   RoomContext,
   VideoTrack,
   useTracks,
@@ -24,6 +24,26 @@ type SessionStats = {
   turnCount: number;
   ttsCharacters: number;
 };
+
+function SingleAgentAudio() {
+  const tracks = useTracks(
+    [{ source: Track.Source.Microphone, withPlaceholder: false }],
+    { onlySubscribed: true },
+  );
+
+  const agentTrack = useMemo(() => {
+    const agents = tracks.filter((t) =>
+      t.participant.identity.toLowerCase().includes("agent"),
+    );
+    if (agents.length === 0) return null;
+    return agents.reduce((latest, t) =>
+      t.participant.identity > latest.participant.identity ? t : latest,
+    );
+  }, [tracks]);
+
+  if (!agentTrack?.publication) return null;
+  return <AudioTrack trackRef={agentTrack} />;
+}
 
 function PatientVideo() {
   const tracks = useTracks(
@@ -321,7 +341,7 @@ function SessionPanel({
         </button>
       </div>
 
-      <RoomAudioRenderer />
+      <SingleAgentAudio />
     </div>
   );
 }

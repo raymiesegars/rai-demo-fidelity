@@ -64,6 +64,32 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=build_llm(),
         tts=cartesia.TTS(voice=voice_id),
     )
+    superseded = False
+
+    def is_agent_identity(identity: str) -> bool:
+        return identity.startswith("agent-")
+
+    async def retire(reason: str) -> None:
+        nonlocal superseded
+        if superseded:
+            return
+        superseded = True
+        logger.warning("Retiring this agent worker: %s", reason)
+        try:
+            await session.aclose()
+        except Exception:
+            logger.exception("Error closing superseded session")
+        ctx.shutdown(reason)
+
+    @ctx.room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        if not is_agent_identity(participant.identity):
+            return
+        if participant.identity == ctx.room.local_participant.identity:
+            return
+        asyncio.create_task(
+            retire(f"newer agent joined ({participant.identity})")
+        )
 
     async def publish_to_client(payload: dict) -> None:
         await ctx.room.local_participant.publish_data(
@@ -103,6 +129,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @ctx.room.on("data_received")
     def on_data(data: rtc.DataPacket) -> None:
+        if superseded:
+            return
         if data.topic != "user_text":
             return
         try:
