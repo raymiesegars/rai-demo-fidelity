@@ -1,12 +1,19 @@
 "use client";
 
 import {
-  AudioTrack,
   RoomContext,
+  useRoomContext,
   VideoTrack,
   useTracks,
 } from "@livekit/components-react";
-import { ConnectionState, Room, RoomEvent, Track } from "livekit-client";
+import {
+  ConnectionState,
+  RemoteParticipant,
+  RemoteTrack,
+  Room,
+  RoomEvent,
+  Track,
+} from "livekit-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   estimateSessionCostUsd,
@@ -25,27 +32,67 @@ type SessionStats = {
   ttsCharacters: number;
 };
 
-function SingleAgentAudio() {
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Microphone, withPlaceholder: false },
-      { source: Track.Source.Unknown, withPlaceholder: false },
-    ],
-    { onlySubscribed: true },
+function newestAgent(participants: Iterable<RemoteParticipant>) {
+  const agents = [...participants].filter((p) =>
+    p.identity.toLowerCase().includes("agent"),
   );
+  if (agents.length === 0) return null;
+  return agents.reduce((latest, p) =>
+    p.identity > latest.identity ? p : latest,
+  );
+}
 
-  const agentTrack = useMemo(() => {
-    const agents = tracks.filter((t) =>
-      t.participant.identity.toLowerCase().includes("agent"),
-    );
-    if (agents.length === 0) return null;
-    return agents.reduce((latest, t) =>
-      t.participant.identity > latest.participant.identity ? t : latest,
-    );
-  }, [tracks]);
+function SingleAgentAudio() {
+  const room = useRoomContext();
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const boundAgentRef = useRef<string | null>(null);
 
-  if (!agentTrack?.publication) return null;
-  return <AudioTrack trackRef={agentTrack} />;
+  useEffect(() => {
+    if (!room) return;
+
+    const attachNewestAgent = () => {
+      const agent = newestAgent(room.remoteParticipants.values());
+      const el = audioRef.current;
+      if (!agent || !el) return;
+
+      if (boundAgentRef.current && boundAgentRef.current !== agent.identity) {
+        el.srcObject = null;
+      }
+
+      for (const pub of agent.audioTrackPublications.values()) {
+        const track = pub.track;
+        if (track) {
+          track.attach(el);
+          boundAgentRef.current = agent.identity;
+          void el.play().catch(() => {
+            /* startAudio() handles browser unlock */
+          });
+          return;
+        }
+      }
+    };
+
+    const onTrackSubscribed = (
+      track: RemoteTrack,
+      _pub: unknown,
+      participant: RemoteParticipant,
+    ) => {
+      if (track.kind !== Track.Kind.Audio) return;
+      if (!participant.identity.toLowerCase().includes("agent")) return;
+      attachNewestAgent();
+    };
+
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.on(RoomEvent.ParticipantConnected, attachNewestAgent);
+    attachNewestAgent();
+
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+      room.off(RoomEvent.ParticipantConnected, attachNewestAgent);
+    };
+  }, [room]);
+
+  return <audio ref={audioRef} autoPlay playsInline className="hidden" />;
 }
 
 function PatientVideo() {
@@ -366,6 +413,7 @@ export default function PatientSession() {
       }
       const { token, url, room: roomName } = await res.json();
       await room.connect(url, token);
+      await room.startAudio();
       setConnected(true);
       console.info("Joined room:", roomName);
     } catch (err) {
