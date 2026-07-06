@@ -6,7 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WAV2LIP_ROOT="${WAV2LIP_ROOT:-/workspace/Wav2Lip}"
 CHECKPOINT="${WAV2LIP_ROOT}/checkpoints/wav2lip_gan.pth"
-MIN_BYTES=130000000
+# Official release was ~139MB; HF mirrors are often ~436MB
+MIN_BYTES=100000000
 
 echo "==> Installing Wav2Lip to $WAV2LIP_ROOT"
 if [ ! -d "$WAV2LIP_ROOT" ]; then
@@ -35,6 +36,7 @@ from pathlib import Path
 import sys
 p = Path('$CHECKPOINT')
 if not p.is_file() or p.stat().st_size < $MIN_BYTES:
+    print('bad size:', p.stat().st_size if p.is_file() else 'missing')
     sys.exit(1)
 import torch
 torch.load(str(p), map_location='cpu', weights_only=False)
@@ -43,16 +45,29 @@ print('checkpoint ok:', p.stat().st_size, 'bytes')
 }
 
 download_checkpoint() {
-  echo "==> Downloading Wav2Lip GAN checkpoint (~139MB)…"
+  echo "==> Downloading Wav2Lip GAN checkpoint (100–450MB)…"
   rm -f "$CHECKPOINT"
-  curl -fL --retry 3 --retry-delay 5 -o "$CHECKPOINT" \
-    "https://github.com/Rudrabha/Wav2Lip/releases/download/v0.1/wav2lip_gan.pth" \
-    || curl -fL --retry 3 --retry-delay 5 -o "$CHECKPOINT" \
-    "https://huggingface.co/spaces/akhaliq/Wav2Lip/resolve/main/wav2lip_gan.pth"
+
+  # Mirror 1: HuggingFace (public, no auth)
+  if curl -fL --retry 2 --retry-delay 3 --progress-bar -o "$CHECKPOINT" \
+    "https://huggingface.co/Nekochu/Wav2Lip/resolve/main/wav2lip_gan.pth"; then
+  # Mirror 2: alternate HF repo
+  elif curl -fL --retry 2 --retry-delay 3 --progress-bar -o "$CHECKPOINT" \
+    "https://huggingface.co/numz/wav2lip_studio/resolve/main/Wav2lip/wav2lip_gan.pth"; then
+  # Mirror 3: Google Drive (official README link)
+  else
+    echo "    curl failed — trying gdown (Google Drive)…"
+    pip install -q gdown
+    gdown "https://drive.google.com/uc?id=15G3U08c8xsCkOqQxE38Z2XXDnPcOptNk" \
+      -O "$CHECKPOINT" \
+      || gdown --folder "https://drive.google.com/drive/folders/1I-0dNLfFOSFwrfqjNa-SXuwaURHE5K4k" \
+        -O /tmp/wav2lip_ckpt \
+        && cp /tmp/wav2lip_ckpt/wav2lip_gan.pth "$CHECKPOINT"
+  fi
 }
 
 if ! verify_checkpoint 2>/dev/null; then
-  echo "    Checkpoint missing or corrupt — re-downloading…"
+  echo "    Checkpoint missing or corrupt — downloading…"
   download_checkpoint
   verify_checkpoint
 fi

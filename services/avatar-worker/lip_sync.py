@@ -14,8 +14,8 @@ import numpy as np
 
 logger = logging.getLogger("lip-sync")
 
-# Official wav2lip_gan.pth is ~139 MB; partial downloads are usually a few KB.
-CHECKPOINT_MIN_BYTES = 130_000_000
+# Official release was ~139MB; public HF mirrors are often ~436MB.
+CHECKPOINT_MIN_BYTES = 100_000_000
 
 
 def save_wav_int16(path: str, samples: np.ndarray, sample_rate: int = 48000) -> None:
