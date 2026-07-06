@@ -20,9 +20,10 @@ set_kv() {
 
 set_kv AVATAR_MODE wav2lip
 set_kv MOUTH_DRIVE composite
-set_kv LIP_SYNC_FIRST_CHUNK_SEC 0.35
-set_kv LIP_SYNC_CHUNK_SEC 0.5
-set_kv LIP_SYNC_MAX_LATE_SEC 0.12
+set_kv LIP_SYNC_FIRST_CHUNK_SEC 0.2
+set_kv LIP_SYNC_CHUNK_SEC 0.4
+set_kv LIP_PATCH_STALE_SEC 0.25
+set_kv LIP_RECT_Y_SHIFT -0.04
 set_kv WAV2LIP_PLAYBACK 0
 
 echo "Updated $ENV_FILE for lip composite mode:"

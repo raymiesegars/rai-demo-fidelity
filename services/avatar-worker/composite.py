@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import os
+
 import cv2
 import numpy as np
 
 
 def lip_rect(box: list[int]) -> tuple[int, int, int, int]:
-    """Tight crop around the mouth only — not the whole lower face."""
+    """Tight crop on the mouth — tuned to sit on the lip line, not the chin."""
     y1, y2, x1, x2 = box
     fh, fw = y2 - y1, x2 - x1
-    ly1 = y1 + int(fh * 0.74)
-    ly2 = y1 + int(fh * 0.93)
-    lx1 = x1 + int(fw * 0.34)
-    lx2 = x1 + int(fw * 0.66)
+    # Nudge up via env (negative = higher on face)
+    y_shift = float(os.environ.get("LIP_RECT_Y_SHIFT", "-0.04"))
+    top = 0.66 + y_shift
+    bottom = 0.84 + y_shift
+    ly1 = y1 + int(fh * top)
+    ly2 = y1 + int(fh * bottom)
+    lx1 = x1 + int(fw * 0.40)
+    lx2 = x1 + int(fw * 0.60)
     return ly1, ly2, lx1, lx2
 
 
@@ -26,16 +32,26 @@ def extract_lip_patch(frame: np.ndarray, box: list[int]) -> np.ndarray:
     return frame[ly1:ly2, lx1:lx2].copy()
 
 
-def _feather_mask(h: int, w: int) -> np.ndarray:
-    mask = np.ones((h, w), dtype=np.float32)
-    fade = max(2, min(h, w) // 6)
-    for i in range(fade):
-        a = (i + 1) / fade
-        mask[i, :] *= a
-        mask[-i - 1, :] *= a
-        mask[:, i] *= a
-        mask[:, -i - 1] *= a
-    return mask
+def _mouth_mask(h: int, w: int) -> np.ndarray:
+    """Oval mask: full opacity in the center, soft edge only at the border."""
+    mask = np.zeros((h, w), dtype=np.float32)
+    cx, cy = w // 2, h // 2
+    axes = (max(2, w // 2 - 3), max(2, h // 2 - 3))
+    cv2.ellipse(mask, (cx, cy), axes, 0, 0, 360, 1.0, -1)
+    fade = max(3, min(h, w) // 5)
+    blur = cv2.GaussianBlur(mask, (fade | 1, fade | 1), 0)
+    return np.clip(blur, 0.0, 1.0)
+
+
+def _match_border_color(src: np.ndarray, dst: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Pull patch color toward the underlying skin at the mouth edge."""
+    edge = mask < 0.45
+    if not np.any(edge):
+        return src
+    dst_mean = dst[edge].mean(axis=0)
+    src_mean = src[edge].mean(axis=0)
+    corrected = src + (dst_mean - src_mean)
+    return np.clip(corrected, 0, 255)
 
 
 def composite_lip_patch(
@@ -43,7 +59,7 @@ def composite_lip_patch(
     patch: np.ndarray,
     box: list[int],
 ) -> np.ndarray:
-    """Paste a Wav2Lip lip patch onto the current idle frame with soft edges."""
+    """Paste a Wav2Lip lip patch onto the current idle frame."""
     if patch.size == 0:
         return base
 
@@ -57,9 +73,10 @@ def composite_lip_patch(
     if resized.shape[2] == 4:
         resized = resized[:, :, :3]
 
-    mask = _feather_mask(th, tw)[:, :, np.newaxis]
+    mask = _mouth_mask(th, tw)[:, :, np.newaxis]
     roi = out[ly1:ly2, lx1:lx2, :3].astype(np.float32)
     src = resized.astype(np.float32)
+    src = _match_border_color(src, roi, mask[:, :, 0])
     blended = src * mask + roi * (1.0 - mask)
     out[ly1:ly2, lx1:lx2, :3] = blended.astype(np.uint8)
     return out

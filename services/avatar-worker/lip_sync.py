@@ -251,6 +251,31 @@ class Wav2LipEngine:
             err = ready_line + (self._daemon.stderr.read(4000) if self._daemon.stderr else "")
             raise RuntimeError(f"Wav2Lip daemon failed to start: {err}")
         logger.info("Wav2Lip daemon ready (model loaded once)")
+        self._warm_daemon()
+
+    def _warm_daemon(self) -> None:
+        """One cheap inference so the first real utterance is not ~1s slower."""
+        if self._daemon is None or self._daemon.stdin is None:
+            return
+        silence = np.zeros(int(0.12 * 48000), dtype=np.int16)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            warm_wav = f.name
+        out_mp4 = tempfile.mktemp(suffix=".mp4")
+        try:
+            save_wav_int16(warm_wav, silence, 48000)
+            job = json.dumps({"wav": warm_wav, "out": out_mp4})
+            self._daemon.stdin.write(job + "\n")
+            self._daemon.stdin.flush()
+            resp_line = self._daemon.stdout.readline()
+            if resp_line:
+                resp = json.loads(resp_line)
+                if resp.get("ok"):
+                    logger.info("Wav2Lip daemon warmed in %.2fs", resp.get("sec", 0))
+        except Exception:
+            logger.warning("Wav2Lip warm-up failed (non-fatal)", exc_info=True)
+        finally:
+            Path(warm_wav).unlink(missing_ok=True)
+            Path(out_mp4).unlink(missing_ok=True)
 
     def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
         """Wav2Lip on anchor still via persistent daemon — returns lip-only patches."""

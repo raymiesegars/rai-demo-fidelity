@@ -146,9 +146,9 @@ class AvatarPublisher:
         self._last_energy = 0.0
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.35"))
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.2"))
-        self._first_chunk_sec = float(os.environ.get("LIP_SYNC_FIRST_CHUNK_SEC", "0.35"))
-        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "0.5"))
-        self._sync_window_sec = float(os.environ.get("LIP_SYNC_SYNC_WINDOW_SEC", "2.0"))
+        self._first_chunk_sec = float(os.environ.get("LIP_SYNC_FIRST_CHUNK_SEC", "0.2"))
+        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "0.4"))
+        self._patch_stale_sec = float(os.environ.get("LIP_PATCH_STALE_SEC", "0.25"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
         self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
         self._active_agent: str | None = None
@@ -247,26 +247,47 @@ class AvatarPublisher:
         now = time.monotonic()
         end = chunk_start + chunk_dur
         lag = now - chunk_start
+        kept = 0
 
-        if lag <= self._sync_window_sec and now < end + 0.05:
-            if now <= chunk_start:
-                start, span = chunk_start, chunk_dur
-            else:
-                start, span = now, max(0.05, end - now)
-        else:
+        if now >= end:
+            if not self._is_speaking():
+                logger.info(
+                    "Dropped %d lip patches — speech ended (lag=%.0fms)",
+                    n,
+                    lag * 1000,
+                )
+                return
+            t0, span = now, chunk_dur
             logger.info(
-                "Wav2Lip lag %.1fs — playing %d patches immediately",
-                lag,
+                "Late chunk lag=%.0fms — playing %d patches over %.2fs",
+                lag * 1000,
                 n,
+                span,
             )
-            start, span = now, n / self.fps
+        else:
+            t0, span = chunk_start, chunk_dur
 
         for i, patch in enumerate(patches):
-            t = (i / n) * span if n > 1 else 0.0
-            self._lip_patch_queue.append(TimedPatch(patch, start + t))
+            play_at = t0 + (i / n) * span if n > 1 else t0
+            if play_at < now - self._patch_stale_sec:
+                continue
+            self._lip_patch_queue.append(TimedPatch(patch, play_at))
+            kept += 1
 
+        if kept == 0:
+            logger.info(
+                "Skipped %d stale lip patches (lag=%.0fms)",
+                n,
+                lag * 1000,
+            )
+            return
+
+        self._lip_patch_queue = deque(
+            sorted(self._lip_patch_queue, key=lambda item: item.play_at)
+        )
         logger.info(
-            "Queued %d lip patches (lag=%.0fms, queue=%d)",
+            "Queued %d/%d lip patches (lag=%.0fms, queue=%d)",
+            kept,
             n,
             lag * 1000,
             len(self._lip_patch_queue),
@@ -317,7 +338,13 @@ class AvatarPublisher:
             return base
 
         now = time.monotonic()
-        if now < self._lip_patch_queue[0].play_at:
+        while (
+            self._lip_patch_queue
+            and self._lip_patch_queue[0].play_at < now - self._patch_stale_sec
+        ):
+            self._lip_patch_queue.popleft()
+
+        if not self._lip_patch_queue or self._lip_patch_queue[0].play_at > now:
             return base
 
         timed = self._lip_patch_queue.popleft()
