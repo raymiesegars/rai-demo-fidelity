@@ -10,6 +10,7 @@ import tempfile
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -111,6 +112,12 @@ def is_agent_participant(participant: rtc.RemoteParticipant) -> bool:
     return True
 
 
+@dataclass
+class TimedPatch:
+    patch: np.ndarray
+    play_at: float
+
+
 class AvatarPublisher:
     def __init__(
         self,
@@ -130,14 +137,18 @@ class AvatarPublisher:
         self._play_wav2lip = self._use_composite or os.environ.get(
             "WAV2LIP_PLAYBACK", "0"
         ).lower() in ("1", "true", "yes")
-        self._lip_patch_queue: deque[np.ndarray] = deque()
+        self._lip_patch_queue: deque[TimedPatch] = deque()
         self._audio_buffer: list[np.ndarray] = []
+        self._buffer_start_time = 0.0
+        self._chunks_sent = 0
         self._last_audio_at = 0.0
         self._last_speech_at = 0.0
         self._last_energy = 0.0
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.35"))
-        self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.25"))
-        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "2.0"))
+        self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.2"))
+        self._first_chunk_sec = float(os.environ.get("LIP_SYNC_FIRST_CHUNK_SEC", "0.35"))
+        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "0.5"))
+        self._max_late_sec = float(os.environ.get("LIP_SYNC_MAX_LATE_SEC", "0.12"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
         self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
         self._active_agent: str | None = None
@@ -145,11 +156,16 @@ class AvatarPublisher:
         self._lipsync_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="wav2lip"
         )
-        self._wav_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=2)
+        self._wav_queue: asyncio.Queue[tuple[str, float, float] | None] = asyncio.Queue(
+            maxsize=4
+        )
 
         if lipsync and self._use_composite:
             logger.info(
-                "Mouth drive: composite — Wav2Lip lip patches blended onto idle loop"
+                "Mouth drive: composite — lip patches scheduled to agent audio "
+                "(first_chunk=%.2fs, chunk=%.2fs)",
+                self._first_chunk_sec,
+                self._chunk_sec,
             )
         elif lipsync and not self._play_wav2lip:
             logger.info("Mouth drive: idle loop only (set MOUTH_DRIVE=composite)")
@@ -160,6 +176,9 @@ class AvatarPublisher:
         logger.info("Active agent for lip sync: %s", identity)
         self._active_agent = identity
         self._audio_buffer.clear()
+        self._buffer_start_time = 0.0
+        self._chunks_sent = 0
+        self._lip_patch_queue.clear()
         self._subscribed_audio_sids.clear()
 
     def append_audio(self, pcm: np.ndarray, agent_identity: str) -> None:
@@ -173,62 +192,118 @@ class AvatarPublisher:
             self._last_audio_at = now
         if energy < self._buffer_threshold:
             return
+        if not self._audio_buffer:
+            self._buffer_start_time = now
         self._audio_buffer.append(pcm)
         self._last_speech_at = now
         self._last_audio_at = now
 
-    def _prepare_chunk(self) -> np.ndarray | None:
+    def _prepare_chunk(self) -> tuple[np.ndarray, float, float] | None:
         if not self._audio_buffer or not self.lipsync:
             return None
         samples = np.concatenate(self._audio_buffer)
         duration = len(samples) / 48000
         silence_elapsed = time.monotonic() - self._last_speech_at
         speech_active = silence_elapsed < self._silence_seconds
+        chunk_start = self._buffer_start_time
 
         if speech_active:
-            if duration < self._chunk_sec:
+            need = self._first_chunk_sec if self._chunks_sent == 0 else self._chunk_sec
+            if self._buffer_start_time == 0:
+                self._buffer_start_time = time.monotonic() - duration
+                chunk_start = self._buffer_start_time
+            if duration < need:
                 return None
-            n = int(self._chunk_sec * 48000)
+            n = int(need * 48000)
             chunk = samples[:n]
             remainder = samples[n:]
             self._audio_buffer = [remainder] if len(remainder) else []
-            return chunk
+            if remainder.size:
+                self._buffer_start_time = chunk_start + len(chunk) / 48000
+            else:
+                self._buffer_start_time = 0.0
+            self._chunks_sent += 1
+            return chunk, chunk_start, len(chunk) / 48000
 
         if duration < self._min_utterance_sec:
             self._audio_buffer.clear()
+            self._buffer_start_time = 0.0
+            self._chunks_sent = 0
             return None
+        if self._buffer_start_time == 0:
+            self._buffer_start_time = time.monotonic() - duration
+            chunk_start = self._buffer_start_time
         self._audio_buffer.clear()
-        return samples
+        self._buffer_start_time = 0.0
+        self._chunks_sent = 0
+        return samples, chunk_start, duration
+
+    def _enqueue_patches(
+        self, patches: list[np.ndarray], chunk_start: float, chunk_dur: float
+    ) -> None:
+        n = len(patches)
+        if n == 0:
+            return
+        now = time.monotonic()
+        end = chunk_start + chunk_dur
+        if end < now - self._max_late_sec:
+            logger.warning(
+                "Dropped %d lip patches (audio finished %.0fms ago)",
+                n,
+                (now - end) * 1000,
+            )
+            return
+
+        if now <= chunk_start:
+            start, span = chunk_start, chunk_dur
+        elif now < end:
+            # Audio still playing — squeeze lips into the time left for this chunk.
+            start, span = now, end - now
+        else:
+            start, span = now, n / self.fps
+
+        for i, patch in enumerate(patches):
+            t = (i / n) * span if n > 1 else 0.0
+            self._lip_patch_queue.append(TimedPatch(patch, start + t))
+
+        lag_ms = max(0.0, (now - chunk_start) * 1000)
+        logger.info(
+            "Queued %d lip patches (lag=%.0fms, queue=%d)",
+            n,
+            lag_ms,
+            len(self._lip_patch_queue),
+        )
 
     async def maybe_flush_utterance(self) -> None:
         if not self._play_wav2lip:
             return
-        chunk = self._prepare_chunk()
-        if chunk is None:
+        prepared = self._prepare_chunk()
+        if prepared is None:
             return
+        chunk, chunk_start, chunk_dur = prepared
         if self._wav_queue.full():
             return
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             wav_path = f.name
         save_wav_int16(wav_path, chunk, 48000)
-        await self._wav_queue.put(wav_path)
+        await self._wav_queue.put((wav_path, chunk_start, chunk_dur))
 
     async def _lipsync_worker(self) -> None:
         if not self._play_wav2lip:
             return
         loop = asyncio.get_running_loop()
         while True:
-            wav_path = await self._wav_queue.get()
-            if wav_path is None:
+            item = await self._wav_queue.get()
+            if item is None:
                 break
+            wav_path, chunk_start, chunk_dur = item
             try:
                 if self.lipsync:
                     patches = await loop.run_in_executor(
                         self._lipsync_executor, self.lipsync.sync_utterance, wav_path
                     )
                     if patches:
-                        self._lip_patch_queue.extend(patches)
-                        logger.info("Queued %d lip patches", len(patches))
+                        self._enqueue_patches(patches, chunk_start, chunk_dur)
             except Exception:
                 logger.exception("Lip sync failed")
             finally:
@@ -240,15 +315,23 @@ class AvatarPublisher:
 
     def next_display_frame(self) -> np.ndarray:
         base = self.loop.next_idle_frame()
-        if (
-            self._use_composite
-            and self._lip_patch_queue
-            and (self._is_speaking() or len(self._lip_patch_queue) > self.fps)
+        if not self._use_composite or not self._lip_patch_queue:
+            return base
+
+        now = time.monotonic()
+        while (
+            self._lip_patch_queue
+            and self._lip_patch_queue[0].play_at < now - self._max_late_sec
         ):
-            patch = self._lip_patch_queue.popleft()
-            box = self.loop.current_box()
-            if box is not None and patch.size > 0:
-                return composite_lip_patch(base, patch, box)
+            self._lip_patch_queue.popleft()
+
+        if not self._lip_patch_queue or now < self._lip_patch_queue[0].play_at:
+            return base
+
+        timed = self._lip_patch_queue.popleft()
+        box = self.loop.current_box()
+        if box is not None and timed.patch.size > 0:
+            return composite_lip_patch(base, timed.patch, box)
         return base
 
     async def _utterance_worker(self) -> None:
