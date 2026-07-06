@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -15,11 +16,12 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     cli,
+    llm,
 )
 from livekit.agents.voice.events import ConversationItemAddedEvent
 from livekit.plugins import cartesia, openai
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 logger = logging.getLogger("patient-agent")
 
@@ -35,6 +37,20 @@ class PatientAgent(Agent):
         super().__init__(instructions=PATIENT_INSTRUCTIONS)
 
 
+def build_llm() -> llm.LLM:
+    provider = os.environ.get("LLM_PROVIDER", "openai").lower()
+    if provider == "groq":
+        from livekit.plugins import groq
+
+        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        logger.info("Using Groq LLM: %s", model)
+        return groq.LLM(model=model)
+
+    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    logger.info("Using OpenAI LLM: %s", model)
+    return openai.LLM(model=model)
+
+
 server = AgentServer()
 
 
@@ -45,7 +61,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     session = AgentSession(
-        llm=openai.LLM(model="gpt-4o-mini"),
+        llm=build_llm(),
         tts=cartesia.TTS(voice=voice_id),
     )
 
@@ -76,8 +92,8 @@ async def entrypoint(ctx: JobContext) -> None:
         msg = str(err)
         if "insufficient_quota" in msg or "429" in msg:
             msg = (
-                "OpenAI quota exceeded. Add billing at platform.openai.com "
-                "or update OPENAI_API_KEY in services/agent/.env"
+                "OpenAI quota exceeded. Add billing at platform.openai.com/settings/"
+                "organization/billing — or set LLM_PROVIDER=groq with a free Groq key."
             )
         logger.error("Agent session error: %s", msg)
         asyncio.create_task(publish_to_client({"type": "error", "text": msg}))

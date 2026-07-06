@@ -1,4 +1,4 @@
-livekit-agents[openai,cartesia]~=1.2
+livekit-agents[openai,cartesia,groq]~=1.2
 livekit-api~=1.0
 python-dotenv~=1.0
 aiohttp~=3.11
