@@ -1,5 +1,16 @@
-import { AccessToken } from "livekit-server-sdk";
+import {
+  AccessToken,
+  AgentDispatchClient,
+  RoomAgentDispatch,
+  RoomServiceClient,
+} from "livekit-server-sdk";
 import { NextRequest, NextResponse } from "next/server";
+
+const AGENT_NAME = "patient-agent";
+
+function toApiHost(livekitUrl: string): string {
+  return livekitUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+}
 
 export async function GET(req: NextRequest) {
   const room =
@@ -19,6 +30,27 @@ export async function GET(req: NextRequest) {
       { error: "LiveKit credentials not configured in apps/web/.env.local" },
       { status: 500 },
     );
+  }
+
+  const apiHost = toApiHost(livekitUrl);
+  const roomService = new RoomServiceClient(apiHost, apiKey, apiSecret);
+  const dispatchClient = new AgentDispatchClient(apiHost, apiKey, apiSecret);
+
+  try {
+    await roomService.createRoom({
+      name: room,
+      emptyTimeout: 600,
+      departureTimeout: 120,
+      agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
+    });
+  } catch {
+    // Room may already exist — dispatch agent again for this session.
+  }
+
+  try {
+    await dispatchClient.createDispatch(room, AGENT_NAME);
+  } catch (err) {
+    console.warn("Agent dispatch:", err);
   }
 
   const token = new AccessToken(apiKey, apiSecret, {

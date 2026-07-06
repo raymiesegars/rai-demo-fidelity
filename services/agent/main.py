@@ -54,7 +54,7 @@ def build_llm() -> llm.LLM:
 server = AgentServer()
 
 
-@server.rtc_session()
+@server.rtc_session(agent_name="patient-agent")
 async def entrypoint(ctx: JobContext) -> None:
     voice_id = os.environ.get(
         "CARTESIA_VOICE_ID", "df89f42f-f285-4613-adbf-14eedcec4c9e"
