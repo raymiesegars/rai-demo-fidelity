@@ -130,7 +130,7 @@ class AvatarPublisher:
         self.source = source
         self.lipsync = lipsync
         self.fps = fps
-        mouth_drive = os.environ.get("MOUTH_DRIVE", "composite").lower()
+        mouth_drive = os.environ.get("MOUTH_DRIVE", "idle").lower()
         self._use_composite = (
             mouth_drive == "composite" and lipsync is not None and lipsync.is_ready()
         )
@@ -414,13 +414,23 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
 
     lipsync: Wav2LipEngine | None = None
     face_boxes = load_face_boxes(wav2lip_root)
-    if mode == "wav2lip":
+    mouth_drive = os.environ.get("MOUTH_DRIVE", "idle").lower()
+    if mode == "wav2lip" and mouth_drive == "composite":
         lipsync = Wav2LipEngine(loop_video_path=loop_path)
         if lipsync.is_ready():
-            logger.info("Wav2Lip engine ready")
+            logger.info("Wav2Lip engine ready (legacy composite mode)")
             face_boxes = face_boxes or load_face_boxes(wav2lip_root)
+    elif mode == "liveportrait":
+        logger.warning(
+            "AVATAR_MODE=liveportrait is not wired yet — using idle loop. "
+            "Run setup_liveportrait.sh and test in webui first."
+        )
+        mode = "mock"
 
     loop = AudioReactiveLoop(loop_path, face_boxes)
+
+    if mode == "mock":
+        logger.info("Avatar mode: mock — idle loop only (recommended for demo)")
 
     room = rtc.Room()
     await room.connect(url, make_token(room_name))

@@ -1,70 +1,61 @@
-# GPU lip-sync upgrade (RunPod)
+# Avatar worker (RunPod GPU)
 
-## Quick start — Wav2Lip (recommended for demo)
+Streams Alan's ping-pong idle loop to LiveKit and (eventually) drives the mouth from agent TTS audio.
 
-On your RunPod SSH terminal:
+## Recommended demo today — idle loop only
+
+Wav2Lip lip-patch compositing **does not work** on a moving full-body loop (delay, misalignment, floating mouth). Use clean idle mode until LivePortrait is wired in.
 
 ```bash
 cd /workspace/rai-demo-fidelity/services/avatar-worker
 git pull
-bash setup_wav2lip.sh
-```
-
-Update `.env`:
-
-```bash
-AVATAR_MODE=wav2lip
-MOUTH_DRIVE=composite
-LIP_SYNC_CHUNK_SEC=1.0
-TARGET_FPS=25
-WAV2LIP_ROOT=/workspace/Wav2Lip
-WAV2LIP_CHECKPOINT=/workspace/Wav2Lip/checkpoints/wav2lip_gan.pth
-```
-
-Restart the avatar worker:
-
-```bash
+bash apply_demo_env.sh
 export $(grep -v '^#' .env | xargs)
 python main.py
 ```
 
-You should see: `Mouth drive: composite` and `Wav2Lip engine ready`.
-
-When Alan speaks, logs will show:
-- `Wav2Lip produced N lip patches (static anchor)`
-- `Queued N lip patches`
-
-**Note:** Wav2Lip runs on a single anchor still (~0.5–2s per audio chunk on a 4090). Only a **small lip crop** is blended onto the moving idle loop — not a giant face box pulse.
+You should see: `AVATAR_MODE=mock` — Alan loops naturally while the agent speaks. Voice + chat still work.
 
 ---
 
-## How it works
+## Why Wav2Lip composite failed
 
-1. Avatar worker streams ping-pong idle loop (body/head motion preserved)
-2. Subscribes to the **agent's TTS audio track** in the LiveKit room
-3. Buffers audio in ~1s chunks, runs **Wav2Lip** on a cached anchor frame + that audio
-4. Extracts tight lip patches from Wav2Lip output and **feather-blends** them onto the current idle frame using per-frame face boxes
+| Approach | Problem |
+|----------|---------|
+| Mouth warp / pulse | Giant box scaling, not real lips |
+| Wav2Lip full-loop batch | Seconds late, blurry |
+| Wav2Lip static + lip patch | ~1s lag, patch misaligned on moving head, looks like a second mouth |
 
-Set `MOUTH_DRIVE=idle` to disable lip blending (loop only while agent speaks).
+**Root issue:** batch lip models trained on a **still face** cannot be pasted onto a **ping-pong body loop** and look real.
 
 ---
 
-## Premium path — FasterLivePortrait + JoyVASA
+## Real solution — FasterLivePortrait + JoyVASA
 
-For real-time lip-only drive (no batch delay), install FasterLivePortrait + JoyVASA:
+This is what actually targets your goal: **audio-driven facial motion rendered back into the video**, with **lip-only region** when the source is a video loop (per FasterLivePortrait docs).
+
+### One-time setup on RunPod
 
 ```bash
-pip install -U "huggingface_hub[cli]"
-huggingface-cli login --token $HUGGINGFACE_TOKEN
-
-git clone https://github.com/warmshao/FasterLivePortrait.git /workspace/FasterLivePortrait
-cd /workspace/FasterLivePortrait
-pip install -r requirements.txt
-huggingface-cli download warmshao/FasterLivePortrait --local-dir ./checkpoints
-huggingface-cli download jdh-algo/JoyVASA --local-dir ./checkpoints/JoyVASA
+cd /workspace/rai-demo-fidelity/services/avatar-worker
+bash setup_liveportrait.sh
 ```
 
-Use **lip-only** animation region when source is `alan-loop.mp4`.
+### Manual quality check (before we automate)
+
+```bash
+cd /workspace/FasterLivePortrait
+python webui.py --mode onnx
+# Open http://localhost:9870 — use Alan's loop as source, drive with a TTS wav, lip-only region
+```
+
+### What we will build next (`AVATAR_MODE=liveportrait`)
+
+1. JoyVASA turns agent audio → face motion coefficients in real time  
+2. LivePortrait warps the **current loop frame** (lip region only)  
+3. No batch delay, no floating patches — same pose as the idle loop  
+
+`AVATAR_MODE=liveportrait` is not automated yet; `setup_liveportrait.sh` + web UI test is the current milestone.
 
 ---
 
@@ -72,5 +63,20 @@ Use **lip-only** animation region when source is `alan-loop.mp4`.
 
 | AVATAR_MODE | Behavior |
 |-------------|----------|
-| `mock` | Idle loop only — no lip sync |
-| `wav2lip` | Idle loop + Wav2Lip lip patches composited during speech (`MOUTH_DRIVE=composite`) |
+| `mock` | **Recommended** — ping-pong idle loop, agent voice only |
+| `wav2lip` | Legacy — only if `MOUTH_DRIVE=composite` (not recommended) |
+| `liveportrait` | Coming soon — JoyVASA + FasterLivePortrait |
+
+| MOUTH_DRIVE | Behavior |
+|-------------|----------|
+| `idle` | **Recommended** — no mouth hack |
+| `composite` | Deprecated — Wav2Lip patches (broken on loop video) |
+
+---
+
+## Env files
+
+| Script | What it does |
+|--------|----------------|
+| `bash apply_demo_env.sh` | Sets `AVATAR_MODE=mock` + `MOUTH_DRIVE=idle` |
+| `bash apply_lip_composite_env.sh` | Legacy Wav2Lip composite (do not use for demo) |

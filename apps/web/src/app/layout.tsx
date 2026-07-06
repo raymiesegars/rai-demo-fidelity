@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Patient Fidelity Demo",
-  description: "High-fidelity lip-synced patient avatar demo",
+  description: "Patient avatar demo — voice chat with Alan over LiveKit",
 };
 
 export default function RootLayout({
