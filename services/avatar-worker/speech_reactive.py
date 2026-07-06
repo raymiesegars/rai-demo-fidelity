@@ -42,7 +42,10 @@ class SpeechReactiveMouth:
         self._last_voice_at = 0.0
         self._attack = float(os.environ.get("MOUTH_ATTACK", "0.68"))
         self._decay = float(os.environ.get("MOUTH_DECAY", "0.38"))
-        self._open_amount = float(os.environ.get("MOUTH_OPEN_AMOUNT", "1.0"))
+        self._open_amount = float(os.environ.get("MOUTH_OPEN_AMOUNT", "1.15"))
+        self._upper_lift = float(os.environ.get("MOUTH_UPPER_LIFT", "0.08"))
+        self._lower_drop = float(os.environ.get("MOUTH_LOWER_DROP", "0.30"))
+        self._corner_move = float(os.environ.get("MOUTH_CORNER_MOVE", "0.55"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "350"))
         self._silence_cutoff = float(os.environ.get("MOUTH_SILENCE_CUTOFF_SEC", "0.10"))
@@ -72,7 +75,7 @@ class SpeechReactiveMouth:
         if self._smooth_energy >= self._threshold:
             self._last_voice_at = now
             norm = min(1.0, (self._smooth_energy - self._threshold) / self._sensitivity)
-            target = 0.35 + 0.65 * norm
+            target = 0.40 + 0.72 * norm
         elif now - self._last_voice_at < self._silence_cutoff:
             target = self._openness * 0.55
         else:
@@ -109,7 +112,9 @@ class SpeechReactiveMouth:
         o = self._openness * self._open_amount
         out = frame.copy()
         orig = out[ly1:ly2, lx1:lx2, :3].astype(np.float32)
-        warped = _warp_mouth_open(orig, o, self._lip_line)
+        warped = _warp_mouth_open(
+            orig, o, self._lip_line, self._upper_lift, self._lower_drop, self._corner_move
+        )
         mask = _full_mouth_mask(h, w)
         blended = warped * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
         out[ly1:ly2, lx1:lx2, :3] = np.clip(blended, 0, 255).astype(np.uint8)
@@ -123,51 +128,46 @@ class SpeechReactiveMouth:
         return out
 
 
-def _warp_mouth_open(roi: np.ndarray, openness: float, lip_line_frac: float) -> np.ndarray:
-    """Separate upper and lower lip with a smooth displacement field (no seam strip)."""
+def _warp_mouth_open(
+    roi: np.ndarray,
+    openness: float,
+    lip_line_frac: float,
+    upper_frac: float,
+    lower_frac: float,
+    corner_move: float,
+) -> np.ndarray:
+    """Upper lip up, lower lip down — smooth field, no dark gap artifact."""
     h, w = roi.shape[:2]
     lip_y = lip_line_frac * h
-    upper_lift = max(0.5, h * 0.05 * openness)
-    lower_drop = max(1.0, h * 0.20 * openness)
+    upper_lift = max(0.5, h * upper_frac * openness)
+    lower_drop = max(1.0, h * lower_frac * openness)
 
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     cx = (w - 1) * 0.5
-    falloff = 1.0 - np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0) ** 1.25
+    edge = np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0)
+    # Keep corners moving — high corner_move avoids the "pursed lips" look.
+    falloff = corner_move + (1.0 - corner_move) * (1.0 - edge)
 
     map_y = yy.copy()
     map_x = xx.copy()
 
     above = yy < lip_y
     below = ~above
+    t_above = np.clip((lip_y - yy) / max(1.0, lip_y), 0.0, 1.0)
     t_below = np.clip((yy - lip_y) / max(1.0, h - lip_y), 0.0, 1.0)
 
-    map_y[above] = yy[above] - upper_lift * falloff[above]
-    map_y[below] = yy[below] + lower_drop * falloff[below] * t_below[below]
+    disp = np.zeros_like(yy)
+    disp[above] = -upper_lift * falloff[above] * t_above[above]
+    disp[below] = lower_drop * falloff[below] * t_below[below]
+    map_y = yy + disp
 
-    warped = cv2.remap(
+    return cv2.remap(
         roi,
         map_x,
         map_y,
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REFLECT101,
     )
-
-    if openness > 0.12:
-        cavity = _mouth_cavity(h, w, lip_y, openness)
-        dark = np.array([30, 20, 24], dtype=np.float32)
-        warped = warped * (1.0 - cavity[:, :, np.newaxis]) + dark * cavity[:, :, np.newaxis]
-
-    return warped
-
-
-def _mouth_cavity(h: int, w: int, lip_y: float, openness: float) -> np.ndarray:
-    mask = np.zeros((h, w), dtype=np.float32)
-    cx = w // 2
-    cy = int(lip_y)
-    axes = (max(2, int(w * 0.18 * openness)), max(1, int(h * 0.07 * openness)))
-    cv2.ellipse(mask, (cx, cy), axes, 0, 0, 360, min(0.5, openness * 0.55), -1)
-    blur = 5 if min(h, w) > 12 else 3
-    return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
 
 
 def _full_mouth_mask(h: int, w: int) -> np.ndarray:
