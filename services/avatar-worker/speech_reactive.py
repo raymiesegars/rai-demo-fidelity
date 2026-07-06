@@ -43,7 +43,8 @@ class SpeechReactiveMouth:
         self._lower_drop = float(os.environ.get("MOUTH_LOWER_DROP", "0.24"))
         self._corner_move = float(os.environ.get("MOUTH_CORNER_MOVE", "0.62"))
         self._chin_damp_start = float(os.environ.get("MOUTH_CHIN_DAMP_START", "0.78"))
-        self._gap_shade = float(os.environ.get("MOUTH_GAP_SHADE", "0.22"))
+        self._gap_shade = float(os.environ.get("MOUTH_GAP_SHADE", "0.85"))
+        self._gap_width = float(os.environ.get("MOUTH_GAP_WIDTH", "0.18"))
         self._threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._sensitivity = float(os.environ.get("MOUTH_SENSITIVITY", "350"))
         self._silence_cutoff = float(os.environ.get("MOUTH_SILENCE_CUTOFF_SEC", "0.10"))
@@ -120,9 +121,10 @@ class SpeechReactiveMouth:
             self._chin_damp_start,
             self._lip_line,
         )
-        warped = _shade_mouth_gap(warped, o, self._lip_line, self._gap_shade)
         mask = _lip_blend_mask(h, w, self._chin_damp_start)
         blended = warped * mask[:, :, np.newaxis] + orig * (1.0 - mask[:, :, np.newaxis])
+        interior = _mouth_opening_mask(h, w, self._lip_line, o, self._gap_width)
+        blended = _paint_mouth_interior(blended, interior, self._gap_shade)
         out[ly1:ly2, lx1:lx2, :3] = np.clip(blended, 0, 255).astype(np.uint8)
 
         if os.environ.get("MOUTH_DEBUG", "0") == "1":
@@ -191,35 +193,67 @@ def _warp_mouth_open(
     )
 
 
-def _shade_mouth_gap(
-    roi: np.ndarray,
-    openness: float,
+def _mouth_opening_mask(
+    h: int,
+    w: int,
     lip_line_frac: float,
-    gap_shade: float,
+    openness: float,
+    gap_width_frac: float,
 ) -> np.ndarray:
-    """Subtle interior shading so the opening reads as depth, not a skin slit."""
-    if openness < 0.12 or gap_shade <= 0.0:
+    """Organic mouth hole — elliptical, pinched at corners (not a rectangle)."""
+    if openness < 0.10:
+        return np.zeros((h, w), dtype=np.float32)
+
+    lip_y = lip_line_frac * h
+    gap_h = max(2.0, h * (0.028 + 0.042 * openness))
+    gap_w = max(3.0, w * (gap_width_frac + 0.07 * openness))
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx = (w - 1) * 0.5
+    dy = (yy - lip_y) / gap_h
+    dx = (xx - cx) / gap_w
+    core = np.clip(1.0 - (dx * dx + dy * dy * 1.15), 0.0, 1.0) ** 1.4
+
+    edge = np.clip(np.abs(xx - cx) / (cx + 0.5), 0.0, 1.0)
+    corner_pin = 1.0 - 0.82 * np.clip((edge - 0.48) / 0.52, 0.0, 1.0) ** 1.2
+
+    mask = core * corner_pin
+    blur = max(3, min(h, w) // 14) | 1
+    return np.clip(cv2.GaussianBlur(mask, (blur, blur), 0), 0.0, 1.0)
+
+
+def _paint_mouth_interior(
+    roi: np.ndarray,
+    opening_mask: np.ndarray,
+    strength: float,
+) -> np.ndarray:
+    """Replace the opening with a dark oral-cavity color — not darkened skin."""
+    if strength <= 0.0 or opening_mask.max() < 0.02:
         return roi
 
     h, w = roi.shape[:2]
-    lip_y = int(h * lip_line_frac)
-    gap_h = max(2, int(h * (0.04 + 0.05 * openness)))
-    gap_w = max(4, int(w * (0.22 + 0.14 * openness)))
-    mask = np.zeros((h, w), dtype=np.float32)
-    cv2.ellipse(mask, (w // 2, lip_y), (gap_w, gap_h), 0, 0, 360, 1.0, -1)
-    mask = cv2.GaussianBlur(mask, (5, 5), 0)
-    strength = gap_shade * min(1.0, openness)
-    return roi * (1.0 - mask[:, :, np.newaxis] * strength)
+    yy, _xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = (w - 1) * 0.5, h * 0.5
+    dist = np.sqrt(((yy - cy) / max(1.0, h)) ** 2 + ((_xx - cx) / max(1.0, w)) ** 2)
+
+    # Warm dark cavity (BGR); slightly lighter at top for subtle depth.
+    base = np.array([18.0, 10.0, 14.0], dtype=np.float32)
+    top_lift = np.clip(1.0 - (yy / max(1.0, h - 1.0)) * 0.35, 0.65, 1.0)
+    interior = base * top_lift[:, :, np.newaxis]
+    interior += np.array([6.0, 2.0, 4.0], dtype=np.float32) * (1.0 - dist[:, :, np.newaxis]) * 0.25
+
+    m = opening_mask[:, :, np.newaxis] * strength
+    return roi * (1.0 - m) + interior * m
 
 
 def _lip_blend_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
-    """Blend only on lip tissue — avoid warping philtrum/chin skin into the mouth."""
+    """Blend warp on lip ellipses only — no rectangular bridge."""
     mask = np.zeros((h, w), dtype=np.float32)
 
     cv2.ellipse(
         mask,
         (w // 2, int(h * 0.34)),
-        (max(4, int(w * 0.44)), max(3, int(h * 0.18))),
+        (max(4, int(w * 0.44)), max(3, int(h * 0.17))),
         0,
         0,
         360,
@@ -229,17 +263,13 @@ def _lip_blend_mask(h: int, w: int, chin_damp_start: float) -> np.ndarray:
     cv2.ellipse(
         mask,
         (w // 2, int(h * 0.56)),
-        (max(4, int(w * 0.45)), max(3, int(h * 0.19))),
+        (max(4, int(w * 0.45)), max(3, int(h * 0.18))),
         0,
         0,
         360,
         1.0,
         -1,
     )
-    # Corner bridge only — not a full-height rectangle.
-    y1, y2 = int(h * 0.36), int(h * 0.52)
-    x1, x2 = int(w * 0.04), int(w * 0.96)
-    mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], 0.65)
 
     chin = _chin_protect(np.arange(h, dtype=np.float32)[:, np.newaxis], float(h), chin_damp_start)
     mask *= chin
