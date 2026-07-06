@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -14,12 +15,10 @@ import numpy as np
 
 logger = logging.getLogger("lip-sync")
 
-# Official release was ~139MB; public HF mirrors are often ~436MB.
 CHECKPOINT_MIN_BYTES = 100_000_000
 
 
 def save_wav_int16(path: str, samples: np.ndarray, sample_rate: int = 48000) -> None:
-    """Save mono int16 PCM to WAV."""
     samples = np.asarray(samples, dtype=np.int16).flatten()
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
@@ -28,48 +27,69 @@ def save_wav_int16(path: str, samples: np.ndarray, sample_rate: int = 48000) -> 
         wf.writeframes(samples.tobytes())
 
 
-def load_video_frames_bgr(path: str) -> list[np.ndarray]:
+def load_video_frames_rgba(path: str) -> list[np.ndarray]:
     cap = cv2.VideoCapture(path)
     frames: list[np.ndarray] = []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        frames.append(frame)
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA))
     cap.release()
     return frames
-
-
-def load_video_frames_rgba(path: str) -> list[np.ndarray]:
-    return [
-        cv2.cvtColor(f, cv2.COLOR_BGR2RGBA)
-        for f in load_video_frames_bgr(path)
-    ]
 
 
 def checkpoint_is_valid(path: Path) -> bool:
     if not path.is_file():
         return False
-    size = path.stat().st_size
-    if size < CHECKPOINT_MIN_BYTES:
-        logger.warning("Checkpoint too small (%d bytes) — likely corrupt download", size)
+    if path.stat().st_size < CHECKPOINT_MIN_BYTES:
         return False
     try:
         import torch
 
         obj = torch.load(str(path), map_location="cpu", weights_only=False)
-        if isinstance(obj, dict) and "state_dict" in obj:
-            return True
-        logger.warning(
-            "Checkpoint is wrong format (%s) — need dict with state_dict. "
-            "The Google Drive file is TorchScript and will NOT work. "
-            "Re-download from HuggingFace: Nekochu/Wav2Lip",
-            type(obj).__name__,
-        )
+        return isinstance(obj, dict) and "state_dict" in obj
+    except Exception:
         return False
-    except Exception as exc:
-        logger.warning("Checkpoint failed torch.load: %s", exc)
-        return False
+
+
+def detect_face_box(video_path: str, wav2lip_root: Path) -> tuple[int, int, int, int]:
+    """Detect face once at startup — skips ~15s face-det pass on every utterance."""
+    root = str(wav2lip_root.resolve())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    import torch
+    import face_detection  # noqa: Wav2Lip local package
+
+    cap = cv2.VideoCapture(video_path)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise RuntimeError(f"Cannot read frame from {video_path}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    detector = face_detection.FaceAlignment(
+        face_detection.LandmarksType._2D,
+        flip_input=False,
+        device=device,
+    )
+    try:
+        rect = detector.get_detections_for_batch([frame])[0]
+    finally:
+        del detector
+
+    if rect is None:
+        raise RuntimeError("Face not detected in patient loop — check alan-loop.mp4")
+
+    x1, y1, x2, y2 = rect
+    pady1, pady2, padx1, padx2 = 0, 10, 0, 0
+    y1 = max(0, int(y1) - pady1)
+    y2 = min(frame.shape[0], int(y2) + pady2)
+    x1 = max(0, int(x1) - padx1)
+    x2 = min(frame.shape[1], int(x2) + padx2)
+    logger.info("Cached face box for loop: top=%d bottom=%d left=%d right=%d", y1, y2, x1, x2)
+    return y1, y2, x1, x2
 
 
 class Wav2LipEngine:
@@ -81,7 +101,6 @@ class Wav2LipEngine:
         wav2lip_root: str | None = None,
         checkpoint: str | None = None,
     ) -> None:
-        # Must be absolute — Wav2Lip subprocess runs with cwd=WAV2LIP_ROOT.
         self.loop_video_path = str(Path(loop_video_path).resolve())
         self.wav2lip_root = Path(
             wav2lip_root or os.environ.get("WAV2LIP_ROOT", "/workspace/Wav2Lip")
@@ -94,6 +113,11 @@ class Wav2LipEngine:
             )
         )
         self.inference_py = self.wav2lip_root / "inference.py"
+        self.resize_factor = int(os.environ.get("WAV2LIP_RESIZE_FACTOR", "2"))
+        self._face_box: tuple[int, int, int, int] | None = None
+
+        if self.is_ready():
+            self._face_box = detect_face_box(self.loop_video_path, self.wav2lip_root)
 
     def is_ready(self) -> bool:
         return (
@@ -103,15 +127,10 @@ class Wav2LipEngine:
         )
 
     def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
-        """Return lip-synced frames as RGBA numpy arrays."""
-        if not self.is_ready():
-            raise RuntimeError(
-                "Wav2Lip not ready. Re-run: bash setup_wav2lip.sh "
-                "(checkpoint may be corrupt — delete checkpoints/wav2lip_gan.pth first). "
-                f"inference={self.inference_py.is_file()}, "
-                f"checkpoint={checkpoint_is_valid(self.checkpoint)}"
-            )
+        if not self.is_ready() or self._face_box is None:
+            raise RuntimeError("Wav2Lip not ready or face box not cached")
 
+        y1, y2, x1, x2 = self._face_box
         with tempfile.TemporaryDirectory() as tmp:
             out_mp4 = str(Path(tmp) / "lipsync.mp4")
             cmd = [
@@ -127,21 +146,16 @@ class Wav2LipEngine:
                 out_mp4,
                 "--fps",
                 os.environ.get("TARGET_FPS", "25"),
-                "--pads",
-                "0",
-                "10",
-                "0",
-                "0",
-                "--face_det_batch_size",
-                "8",
+                "--resize_factor",
+                str(self.resize_factor),
+                "--box",
+                str(y1),
+                str(y2),
+                str(x1),
+                str(x2),
                 "--wav2lip_batch_size",
-                "64",
+                "128",
             ]
-            logger.info(
-                "Running Wav2Lip lip sync (face=%s, audio=%s)…",
-                self.loop_video_path,
-                audio_wav,
-            )
             result = subprocess.run(
                 cmd,
                 cwd=str(self.wav2lip_root),

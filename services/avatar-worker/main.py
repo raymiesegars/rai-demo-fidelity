@@ -95,108 +95,133 @@ class AvatarPublisher:
         self._last_audio_at = 0.0
         self._last_speech_at = 0.0
         self._last_energy = 0.0
-        self._processing = False
-        self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.45"))
-        self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.35"))
-        self._max_utterance_sec = float(os.environ.get("MAX_UTTERANCE_SEC", "12"))
-        self._speech_threshold = float(os.environ.get("SPEECH_ENERGY_THRESHOLD", "400"))
-        self._animation_threshold = float(
-            os.environ.get("ANIMATION_ENERGY_THRESHOLD", "150")
-        )
+        self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.35"))
+        self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.25"))
+        self._chunk_sec = float(os.environ.get("LIP_SYNC_CHUNK_SEC", "2.0"))
+        self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "60"))
+        self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "40"))
+        self._active_agent: str | None = None
         self._subscribed_audio_sids: set[str] = set()
         self._lipsync_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="wav2lip"
         )
+        self._wav_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=4)
+
+    def set_active_agent(self, identity: str) -> None:
+        if self._active_agent == identity:
+            return
+        logger.info("Switching lip-sync audio source to %s", identity)
+        self._active_agent = identity
+        self._audio_buffer.clear()
+        self._subscribed_audio_sids.clear()
 
     def push_lipsync_frames(self, frames: list[np.ndarray]) -> None:
         self._lipsync_queue.extend(frames)
 
-    def append_audio(self, pcm: np.ndarray) -> None:
-        if pcm.size == 0:
+    def append_audio(self, pcm: np.ndarray, agent_identity: str) -> None:
+        if pcm.size == 0 or agent_identity != self._active_agent:
             return
         pcm = pcm.astype(np.int16)
         energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
         self._last_energy = energy
-        if energy >= self._animation_threshold:
-            self._last_audio_at = time.monotonic()
-        # Agent tracks include silent frames; only buffer actual speech for Wav2Lip.
-        if energy < self._speech_threshold:
-            return
         now = time.monotonic()
+        if energy >= self._animation_threshold:
+            self._last_audio_at = now
+        if energy < self._buffer_threshold:
+            return
         self._audio_buffer.append(pcm)
         self._last_speech_at = now
-        if self._last_audio_at < now:
-            self._last_audio_at = now
+        self._last_audio_at = now
 
-    async def maybe_flush_utterance(self) -> None:
-        if self._processing or not self._audio_buffer:
-            return
+    def _prepare_chunk(self) -> np.ndarray | None:
+        if not self._audio_buffer:
+            return None
 
         samples = np.concatenate(self._audio_buffer)
         duration = len(samples) / 48000
         silence_elapsed = time.monotonic() - self._last_speech_at
-        force_chunk = duration >= self._max_utterance_sec
-        if not force_chunk and silence_elapsed < self._silence_seconds:
-            return
+        speech_active = silence_elapsed < self._silence_seconds
 
-        if force_chunk:
-            max_samples = int(self._max_utterance_sec * 48000)
-            chunk = samples[:max_samples]
-            remainder = samples[max_samples:]
+        if speech_active:
+            if duration < self._chunk_sec:
+                return None
+            n = int(self._chunk_sec * 48000)
+            chunk = samples[:n]
+            remainder = samples[n:]
             self._audio_buffer = [remainder] if len(remainder) else []
-            samples = chunk
-            duration = len(samples) / 48000
-        else:
-            self._audio_buffer.clear()
+            return chunk
+
         if duration < self._min_utterance_sec:
-            return
+            self._audio_buffer.clear()
+            return None
+
+        self._audio_buffer.clear()
+        return samples
+
+    async def _enqueue_lipsync_chunk(self, samples: np.ndarray) -> None:
+        duration = len(samples) / 48000
         if not self.lipsync or not self.lipsync.is_ready():
-            logger.warning(
-                "Agent spoke (%.1fs) but Wav2Lip not ready — run setup_wav2lip.sh",
-                duration,
-            )
+            return
+        if self._wav_queue.full():
+            logger.warning("Lip-sync queue full — skipping %.2fs chunk", duration)
             return
 
-        self._processing = True
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                wav_path = f.name
-            save_wav_int16(wav_path, samples, 48000)
-            logger.info("Lip-syncing %.2fs of agent audio…", duration)
-            frames = await asyncio.get_running_loop().run_in_executor(
-                self._lipsync_executor, self.lipsync.sync_utterance, wav_path
-            )
-            Path(wav_path).unlink(missing_ok=True)
-            if frames:
-                # Resize to stream dimensions if needed
-                resized = []
-                for fr in frames:
-                    if fr.shape[0] != self.loop.height or fr.shape[1] != self.loop.width:
-                        fr = cv2.resize(
-                            fr,
-                            (self.loop.width, self.loop.height),
-                            interpolation=cv2.INTER_LINEAR,
-                        )
-                    resized.append(fr)
-                self.push_lipsync_frames(resized)
-                logger.info("Queued %d lip-synced frames for playback", len(resized))
-        except Exception:
-            logger.exception("Lip sync failed")
-        finally:
-            self._processing = False
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        save_wav_int16(wav_path, samples, 48000)
+        logger.info("Queued lip-sync job: %.2fs of agent audio", duration)
+        await self._wav_queue.put(wav_path)
+
+    async def maybe_flush_utterance(self) -> None:
+        chunk = self._prepare_chunk()
+        if chunk is None:
+            return
+        await self._enqueue_lipsync_chunk(chunk)
+
+    async def _lipsync_worker(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            wav_path = await self._wav_queue.get()
+            if wav_path is None:
+                break
+            try:
+                if not self.lipsync:
+                    continue
+                frames = await loop.run_in_executor(
+                    self._lipsync_executor, self.lipsync.sync_utterance, wav_path
+                )
+                if frames:
+                    resized = []
+                    for fr in frames:
+                        if fr.shape[0] != self.loop.height or fr.shape[1] != self.loop.width:
+                            fr = cv2.resize(
+                                fr,
+                                (self.loop.width, self.loop.height),
+                                interpolation=cv2.INTER_LANCZOS4,
+                            )
+                        resized.append(fr)
+                    self.push_lipsync_frames(resized)
+                    logger.info(
+                        "Playing %d lip-synced frames (~%.1fs)",
+                        len(resized),
+                        len(resized) / self.fps,
+                    )
+            except Exception:
+                logger.exception("Lip sync failed")
+            finally:
+                Path(wav_path).unlink(missing_ok=True)
+                self._wav_queue.task_done()
 
     def _is_speaking(self) -> bool:
-        return time.monotonic() - self._last_audio_at < 0.12
+        return time.monotonic() - self._last_audio_at < 0.4
 
     def next_display_frame(self) -> np.ndarray:
         if self._lipsync_queue:
             return self._lipsync_queue.popleft()
-        # While agent TTS is playing, advance the idle loop faster so the face
-        # moves until Wav2Lip frames are ready (or as fallback in mock mode).
         if self._is_speaking():
-            extra_steps = min(4, 1 + int(self._last_energy / 4000))
+            steps = min(6, 2 + int(self._last_energy / 2500))
             frame = self.loop.next_frame()
-            for _ in range(extra_steps - 1):
+            for _ in range(steps - 1):
                 frame = self.loop.next_frame()
             return frame
         return self.loop.next_frame()
@@ -207,10 +232,11 @@ class AvatarPublisher:
                 await self.maybe_flush_utterance()
             except Exception:
                 logger.exception("Utterance worker error")
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
     async def publish_forever(self, room: rtc.Room) -> None:
-        worker = asyncio.create_task(self._utterance_worker())
+        utterance_task = asyncio.create_task(self._utterance_worker())
+        lipsync_task = asyncio.create_task(self._lipsync_worker())
         interval = 1.0 / self.fps
         try:
             while room.isconnected():
@@ -224,21 +250,24 @@ class AvatarPublisher:
                 self.source.capture_frame(frame)
                 await asyncio.sleep(interval)
         finally:
-            worker.cancel()
+            utterance_task.cancel()
+            await self._wav_queue.put(None)
+            lipsync_task.cancel()
             self._lipsync_executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def consume_agent_audio(
     track: rtc.Track,
     publisher: AvatarPublisher,
+    agent_identity: str,
 ) -> None:
-    """Buffer agent TTS audio and trigger lip sync after each utterance."""
     stream = rtc.AudioStream(track, sample_rate=48000, num_channels=1)
-    logger.info("Subscribed to agent audio for lip sync")
+    logger.info("Subscribed to agent audio for lip sync: %s", agent_identity)
     async for event in stream:
-        frame = event.frame
-        pcm = np.frombuffer(frame.data, dtype=np.int16)
-        publisher.append_audio(pcm)
+        if agent_identity != publisher._active_agent:
+            break
+        pcm = np.frombuffer(event.frame.data, dtype=np.int16)
+        publisher.append_audio(pcm, agent_identity)
 
 
 async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> None:
@@ -251,12 +280,7 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
         if lipsync.is_ready():
             logger.info("Wav2Lip lip sync enabled (face=%s)", lipsync.loop_video_path)
         else:
-            logger.warning(
-                "AVATAR_MODE=wav2lip but Wav2Lip not ready. "
-                "Run: rm /workspace/Wav2Lip/checkpoints/wav2lip_gan.pth && bash setup_wav2lip.sh"
-            )
-    elif mode != "mock":
-        logger.warning("Unknown AVATAR_MODE=%s, using mock loop", mode)
+            logger.warning("AVATAR_MODE=wav2lip but Wav2Lip not ready")
 
     room = rtc.Room()
     await room.connect(url, make_token(room_name))
@@ -290,18 +314,18 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
         sid = track.sid
         if sid in publisher._subscribed_audio_sids:
             return
+        publisher.set_active_agent(participant.identity)
         publisher._subscribed_audio_sids.add(sid)
-        logger.info(
-            "Agent audio track from %s (sid=%s) — lip sync %s",
-            participant.identity,
-            sid,
-            "enabled" if lipsync and lipsync.is_ready() else "pending (run setup_wav2lip.sh)",
+        logger.info("Agent audio track from %s (sid=%s)", participant.identity, sid)
+        asyncio.create_task(
+            consume_agent_audio(track, publisher, participant.identity)
         )
-        asyncio.create_task(consume_agent_audio(track, publisher))
 
     @room.on("participant_connected")
     def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
         logger.info("Participant joined: %s", participant.identity)
+        if is_agent_participant(participant):
+            publisher.set_active_agent(participant.identity)
         for pub in participant.track_publications.values():
             if pub.track and pub.subscribed:
                 maybe_subscribe_agent_audio(pub.track, participant)
@@ -322,7 +346,6 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     ) -> None:
         maybe_subscribe_agent_audio(track, participant)
 
-    # Catch participants already in room when avatar connects
     for participant in room.remote_participants.values():
         logger.info("Already in room: %s", participant.identity)
         for pub in participant.track_publications.values():
