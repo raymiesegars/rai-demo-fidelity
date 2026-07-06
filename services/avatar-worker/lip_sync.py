@@ -14,6 +14,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from composite import extract_lip_patch
+
 logger = logging.getLogger("lip-sync")
 
 CHECKPOINT_MIN_BYTES = 100_000_000
@@ -165,21 +167,12 @@ class Wav2LipEngine:
         )
         self.inference_py = self.wav2lip_root / "inference.py"
         self._boxes_file: Path | None = None
+        self._anchor_image: Path | None = None
+        self._anchor_box: list[int] | None = None
 
         if self.is_ready():
             ensure_wav2lip_patched(self.wav2lip_root)
-            boxes_path = self.wav2lip_root / "temp" / "alan_face_boxes.json"
-            if boxes_path.is_file():
-                with boxes_path.open(encoding="utf-8") as f:
-                    cached = json.load(f)
-                if len(cached) > 0:
-                    logger.info("Loaded %d cached face boxes", len(cached))
-                    self._boxes_file = boxes_path
-            if self._boxes_file is None:
-                boxes = compute_per_frame_boxes(self.loop_video_path, self.wav2lip_root)
-                boxes_path.parent.mkdir(parents=True, exist_ok=True)
-                boxes_path.write_text(json.dumps(boxes), encoding="utf-8")
-                self._boxes_file = boxes_path
+            self._init_boxes_and_anchor()
 
     def is_ready(self) -> bool:
         return (
@@ -188,10 +181,47 @@ class Wav2LipEngine:
             and Path(self.loop_video_path).is_file()
         )
 
-    def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
-        if not self.is_ready() or self._boxes_file is None:
-            raise RuntimeError("Wav2Lip not ready or face boxes not cached")
+    def _init_boxes_and_anchor(self) -> None:
+        boxes_path = self.wav2lip_root / "temp" / "alan_face_boxes.json"
+        if boxes_path.is_file():
+            with boxes_path.open(encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached:
+                logger.info("Loaded %d cached face boxes", len(cached))
+                self._boxes_file = boxes_path
+        if self._boxes_file is None:
+            boxes = compute_per_frame_boxes(self.loop_video_path, self.wav2lip_root)
+            boxes_path.parent.mkdir(parents=True, exist_ok=True)
+            boxes_path.write_text(json.dumps(boxes), encoding="utf-8")
+            self._boxes_file = boxes_path
 
+        with self._boxes_file.open(encoding="utf-8") as f:
+            all_boxes = json.load(f)
+        anchor_idx = int(os.environ.get("ANCHOR_FRAME_INDEX", str(len(all_boxes) // 2)))
+        anchor_idx = min(anchor_idx, len(all_boxes) - 1)
+        self._anchor_box = all_boxes[anchor_idx]
+
+        anchor_path = self.wav2lip_root / "temp" / "alan_anchor.jpg"
+        if not anchor_path.is_file():
+            cap = cv2.VideoCapture(self.loop_video_path)
+            frame = None
+            for i in range(anchor_idx + 1):
+                ok, frame = cap.read()
+                if not ok:
+                    break
+            cap.release()
+            if frame is None:
+                raise RuntimeError("Could not extract anchor frame")
+            cv2.imwrite(str(anchor_path), frame)
+            logger.info("Saved anchor frame %d → %s", anchor_idx, anchor_path)
+        self._anchor_image = anchor_path
+
+    def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
+        """Wav2Lip on a single anchor still — fast; returns lip-only patches."""
+        if not self.is_ready() or self._anchor_image is None or self._anchor_box is None:
+            raise RuntimeError("Wav2Lip not ready")
+
+        y1, y2, x1, x2 = self._anchor_box
         with tempfile.TemporaryDirectory() as tmp:
             out_mp4 = str(Path(tmp) / "lipsync.mp4")
             cmd = [
@@ -200,15 +230,20 @@ class Wav2LipEngine:
                 "--checkpoint_path",
                 str(self.checkpoint),
                 "--face",
-                self.loop_video_path,
+                str(self._anchor_image),
                 "--audio",
                 audio_wav,
                 "--outfile",
                 out_mp4,
                 "--fps",
                 os.environ.get("TARGET_FPS", "25"),
-                "--boxes_file",
-                str(self._boxes_file),
+                "--static",
+                "True",
+                "--box",
+                str(y1),
+                str(y2),
+                str(x1),
+                str(x2),
                 "--wav2lip_batch_size",
                 "128",
             ]
@@ -222,9 +257,7 @@ class Wav2LipEngine:
                 logger.error("Wav2Lip stderr: %s", result.stderr[-2000:])
                 raise RuntimeError(f"Wav2Lip failed: {result.stderr[-500:]}")
 
-            if not Path(out_mp4).is_file():
-                raise RuntimeError("Wav2Lip produced no output video")
-
             frames = load_video_frames_rgba(out_mp4)
-            logger.info("Wav2Lip produced %d frames", len(frames))
-            return frames
+            patches = [extract_lip_patch(f, self._anchor_box) for f in frames]
+            logger.info("Wav2Lip produced %d lip patches (static anchor)", len(patches))
+            return patches

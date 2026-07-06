@@ -14,6 +14,8 @@ Update `.env`:
 
 ```bash
 AVATAR_MODE=wav2lip
+MOUTH_DRIVE=composite
+LIP_SYNC_CHUNK_SEC=1.0
 TARGET_FPS=25
 WAV2LIP_ROOT=/workspace/Wav2Lip
 WAV2LIP_CHECKPOINT=/workspace/Wav2Lip/checkpoints/wav2lip_gan.pth
@@ -26,22 +28,24 @@ export $(grep -v '^#' .env | xargs)
 python main.py
 ```
 
-You should see: `Wav2Lip lip sync enabled` and `Subscribed to agent audio for lip sync`.
+You should see: `Mouth drive: composite` and `Wav2Lip engine ready`.
 
 When Alan speaks, logs will show:
-- `Lip-syncing X.XXs of agent audio…`
-- `Queued N lip-synced frames for playback`
+- `Wav2Lip produced N lip patches (static anchor)`
+- `Queued N lip patches`
 
-**Note:** First lip-sync per utterance takes ~2–5 seconds on a 4090 (batch inference). Idle loop plays while processing, then lip-synced frames play.
+**Note:** Wav2Lip runs on a single anchor still (~0.5–2s per audio chunk on a 4090). Only a **small lip crop** is blended onto the moving idle loop — not a giant face box pulse.
 
 ---
 
 ## How it works
 
-1. Avatar worker streams ping-pong idle loop
+1. Avatar worker streams ping-pong idle loop (body/head motion preserved)
 2. Subscribes to the **agent's TTS audio track** in the LiveKit room
-3. When agent finishes a sentence, runs **Wav2Lip** on `alan-loop.mp4` + that audio
-4. Plays lip-synced frames, then returns to idle loop
+3. Buffers audio in ~1s chunks, runs **Wav2Lip** on a cached anchor frame + that audio
+4. Extracts tight lip patches from Wav2Lip output and **feather-blends** them onto the current idle frame using per-frame face boxes
+
+Set `MOUTH_DRIVE=idle` to disable lip blending (loop only while agent speaks).
 
 ---
 
@@ -69,4 +73,4 @@ Use **lip-only** animation region when source is `alan-loop.mp4`.
 | AVATAR_MODE | Behavior |
 |-------------|----------|
 | `mock` | Idle loop only — no lip sync |
-| `wav2lip` | Idle loop + Wav2Lip on each agent utterance |
+| `wav2lip` | Idle loop + Wav2Lip lip patches composited during speech (`MOUTH_DRIVE=composite`) |

@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from livekit import api, rtc
 
 from lip_sync import Wav2LipEngine, save_wav_int16
+from composite import composite_lip_patch
 
 load_dotenv()
 
@@ -34,52 +35,8 @@ def load_face_boxes(wav2lip_root: Path) -> list[list[int]] | None:
     return boxes if boxes else None
 
 
-def pulse_mouth_region(
-    frame: np.ndarray, box: list[int], energy: float, smooth: float
-) -> np.ndarray:
-    """Stretch the lower face slightly with audio — same pose, visible mouth motion."""
-    out = frame.copy()
-    y1, y2, x1, x2 = box
-    fh, fw = y2 - y1, x2 - x1
-    if fh < 20 or fw < 20:
-        return out
-
-    mouth_y1 = y1 + int(fh * 0.58)
-    mouth = out[mouth_y1:y2, x1:x2]
-    if mouth.size == 0:
-        return out
-
-    # Smooth energy → vertical mouth opening (subtle but visible)
-    open_amt = float(np.clip(smooth / 5000.0, 0.0, 1.0)) ** 0.8
-    scale_y = 1.0 + open_amt * 0.18
-    scale_x = 1.0 + open_amt * 0.04
-    new_h = max(4, int(mouth.shape[0] * scale_y))
-    new_w = max(4, int(mouth.shape[1] * scale_x))
-    warped = cv2.resize(mouth, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-    # Paste centered on original mouth slot
-    cy = (mouth_y1 + y2) // 2
-    cx = (x1 + x2) // 2
-    y_start = cy - new_h // 2
-    x_start = cx - new_w // 2
-    y_end = y_start + new_h
-    x_end = x_start + new_w
-
-    y0 = max(0, y_start)
-    x0 = max(0, x_start)
-    y1p = min(out.shape[0], y_end)
-    x1p = min(out.shape[1], x_end)
-    wy0 = y0 - y_start
-    wx0 = x0 - x_start
-    wy1 = wy0 + (y1p - y0)
-    wx1 = wx0 + (x1p - x0)
-    if y1p > y0 and x1p > x0:
-        out[y0:y1p, x0:x1p] = warped[wy0:wy1, wx0:wx1]
-    return out
-
-
 class AudioReactiveLoop:
-    """Ping-pong idle loop; during speech, pulse mouth region on the current pose."""
+    """Ping-pong idle loop; lip patches are composited on top during speech."""
 
     def __init__(self, path: str, face_boxes: list[list[int]] | None = None) -> None:
         cap = cv2.VideoCapture(path)
@@ -102,16 +59,19 @@ class AudioReactiveLoop:
         self.height, self.width = self.frames[0].shape[:2]
         self._smooth_energy = 0.0
         self._face_boxes = face_boxes or []
-        self._mouth_drive = os.environ.get("MOUTH_DRIVE", "warp").lower()
         self._frame_step = max(1, int(os.environ.get("IDLE_FRAME_STEP", "2")))
 
         if self._face_boxes and len(self._face_boxes) >= len(self.frames):
-            logger.info("Mouth pulse drive ready (%s, %d frames)", self._mouth_drive, len(self.frames))
+            logger.info("Per-frame face boxes ready (%d frames)", len(self.frames))
         else:
-            logger.warning("No face boxes — idle loop only while speaking")
-            self._mouth_drive = "idle"
+            logger.warning("No face boxes — lip composite needs cached boxes on RunPod")
 
         logger.info("Loaded %d frames (%dx%d)", len(self.frames), self.width, self.height)
+
+    def current_box(self) -> list[int] | None:
+        if not self._face_boxes:
+            return None
+        return self._face_boxes[self._index % len(self._face_boxes)]
 
     def next_idle_frame(self) -> np.ndarray:
         frame = self.frames[self._index]
@@ -127,16 +87,6 @@ class AudioReactiveLoop:
             self._direction = 1
         self._index += self._direction
         return frame
-
-    def speaking_frame(self, energy: float) -> np.ndarray:
-        self._smooth_energy = 0.6 * self._smooth_energy + 0.4 * energy
-        base = self.next_idle_frame()
-
-        if self._mouth_drive != "warp" or not self._face_boxes:
-            return base
-
-        box = self._face_boxes[self._index % len(self._face_boxes)]
-        return pulse_mouth_region(base, box, energy, self._smooth_energy)
 
 
 def make_token(room: str, identity: str = "avatar-patient") -> str:
@@ -173,12 +123,14 @@ class AvatarPublisher:
         self.source = source
         self.lipsync = lipsync
         self.fps = fps
-        self._play_wav2lip = os.environ.get("WAV2LIP_PLAYBACK", "0").lower() in (
-            "1",
-            "true",
-            "yes",
+        mouth_drive = os.environ.get("MOUTH_DRIVE", "composite").lower()
+        self._use_composite = (
+            mouth_drive == "composite" and lipsync is not None and lipsync.is_ready()
         )
-        self._lipsync_queue: deque[np.ndarray] = deque()
+        self._play_wav2lip = self._use_composite or os.environ.get(
+            "WAV2LIP_PLAYBACK", "0"
+        ).lower() in ("1", "true", "yes")
+        self._lip_patch_queue: deque[np.ndarray] = deque()
         self._audio_buffer: list[np.ndarray] = []
         self._last_audio_at = 0.0
         self._last_speech_at = 0.0
@@ -195,11 +147,12 @@ class AvatarPublisher:
         )
         self._wav_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=2)
 
-        if lipsync and not self._play_wav2lip:
+        if lipsync and self._use_composite:
             logger.info(
-                "Mouth drive: %s (real-time). Wav2Lip batch playback is off.",
-                loop._mouth_drive,
+                "Mouth drive: composite — Wav2Lip lip patches blended onto idle loop"
             )
+        elif lipsync and not self._play_wav2lip:
+            logger.info("Mouth drive: idle loop only (set MOUTH_DRIVE=composite)")
 
     def set_active_agent(self, identity: str) -> None:
         if self._active_agent == identity:
@@ -270,11 +223,12 @@ class AvatarPublisher:
                 break
             try:
                 if self.lipsync:
-                    frames = await loop.run_in_executor(
+                    patches = await loop.run_in_executor(
                         self._lipsync_executor, self.lipsync.sync_utterance, wav_path
                     )
-                    if frames and self._is_speaking():
-                        self._lipsync_queue.extend(frames[: int(self.fps * 0.5)])
+                    if patches:
+                        self._lip_patch_queue.extend(patches)
+                        logger.info("Queued %d lip patches", len(patches))
             except Exception:
                 logger.exception("Lip sync failed")
             finally:
@@ -285,11 +239,17 @@ class AvatarPublisher:
         return time.monotonic() - self._last_audio_at < 0.45
 
     def next_display_frame(self) -> np.ndarray:
-        if self._play_wav2lip and self._lipsync_queue and self._is_speaking():
-            return self._lipsync_queue.popleft()
-        if self._is_speaking():
-            return self.loop.speaking_frame(self._last_energy)
-        return self.loop.next_idle_frame()
+        base = self.loop.next_idle_frame()
+        if (
+            self._use_composite
+            and self._lip_patch_queue
+            and (self._is_speaking() or len(self._lip_patch_queue) > self.fps)
+        ):
+            patch = self._lip_patch_queue.popleft()
+            box = self.loop.current_box()
+            if box is not None and patch.size > 0:
+                return composite_lip_patch(base, patch, box)
+        return base
 
     async def _utterance_worker(self) -> None:
         while True:
