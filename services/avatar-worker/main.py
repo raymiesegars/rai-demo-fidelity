@@ -103,6 +103,7 @@ class AudioReactiveLoop:
         self._smooth_energy = 0.0
         self._face_boxes = face_boxes or []
         self._mouth_drive = os.environ.get("MOUTH_DRIVE", "warp").lower()
+        self._frame_step = max(1, int(os.environ.get("IDLE_FRAME_STEP", "2")))
 
         if self._face_boxes and len(self._face_boxes) >= len(self.frames):
             logger.info("Mouth pulse drive ready (%s, %d frames)", self._mouth_drive, len(self.frames))
@@ -114,6 +115,12 @@ class AudioReactiveLoop:
 
     def next_idle_frame(self) -> np.ndarray:
         frame = self.frames[self._index]
+        for _ in range(self._frame_step - 1):
+            if self._index >= len(self.frames) - 1:
+                self._direction = -1
+            elif self._index <= 0:
+                self._direction = 1
+            self._index += self._direction
         if self._index >= len(self.frames) - 1:
             self._direction = -1
         elif self._index <= 0:
@@ -123,12 +130,7 @@ class AudioReactiveLoop:
 
     def speaking_frame(self, energy: float) -> np.ndarray:
         self._smooth_energy = 0.6 * self._smooth_energy + 0.4 * energy
-
-        # Advance idle slowly during speech so body still breathes, head stays stable
-        if self._index % 3 == 0:
-            base = self.next_idle_frame()
-        else:
-            base = self.frames[self._index].copy()
+        base = self.next_idle_frame()
 
         if self._mouth_drive != "warp" or not self._face_boxes:
             return base
@@ -301,6 +303,7 @@ class AvatarPublisher:
         utterance_task = asyncio.create_task(self._utterance_worker())
         lipsync_task = asyncio.create_task(self._lipsync_worker())
         interval = 1.0 / self.fps
+        tick = 0
         try:
             while room.isconnected():
                 rgba = self.next_display_frame()
@@ -311,6 +314,15 @@ class AvatarPublisher:
                     rgba.tobytes(),
                 )
                 self.source.capture_frame(frame)
+                tick += 1
+                if tick % (self.fps * 15) == 0:
+                    speaking = self._is_speaking()
+                    logger.info(
+                        "Streaming OK — frame %d/%d, speaking=%s",
+                        self.loop._index,
+                        len(self.loop.frames),
+                        speaking,
+                    )
                 await asyncio.sleep(interval)
         finally:
             utterance_task.cancel()
