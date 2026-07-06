@@ -19,6 +19,28 @@ logger = logging.getLogger("lip-sync")
 CHECKPOINT_MIN_BYTES = 100_000_000
 
 
+def ensure_wav2lip_patched(wav2lip_root: Path) -> None:
+    """Apply and verify Wav2Lip patches (idempotent)."""
+    inference = wav2lip_root / "inference.py"
+    if not inference.is_file():
+        raise RuntimeError(f"Wav2Lip not found at {wav2lip_root}")
+    text = inference.read_text(encoding="utf-8")
+    if "--boxes_file" in text and "args.boxes_file" in text:
+        return
+    patch_script = Path(__file__).resolve().parent / "patch_wav2lip.py"
+    result = subprocess.run(
+        [sys.executable, str(patch_script), str(wav2lip_root)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("patch_wav2lip failed: %s", result.stderr)
+        raise RuntimeError("Failed to patch Wav2Lip")
+    text = inference.read_text(encoding="utf-8")
+    if "--boxes_file" not in text or "args.boxes_file" not in text:
+        raise RuntimeError("Wav2Lip boxes_file patch missing after patch_wav2lip.py")
+
+
 def save_wav_int16(path: str, samples: np.ndarray, sample_rate: int = 48000) -> None:
     samples = np.asarray(samples, dtype=np.int16).flatten()
     with wave.open(path, "wb") as wf:
@@ -145,6 +167,7 @@ class Wav2LipEngine:
         self._boxes_file: Path | None = None
 
         if self.is_ready():
+            ensure_wav2lip_patched(self.wav2lip_root)
             boxes_path = self.wav2lip_root / "temp" / "alan_face_boxes.json"
             if boxes_path.is_file():
                 with boxes_path.open(encoding="utf-8") as f:
