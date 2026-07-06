@@ -21,6 +21,10 @@ set_kv AVATAR_MODE liveportrait
 set_kv MOUTH_DRIVE idle
 set_kv FLP_ROOT /workspace/FasterLivePortrait
 set_kv FLP_ANIMATION_REGION exp
+set_kv LIP_SYNC_FIRST_CHUNK_SEC 0.5
+set_kv LIP_SYNC_CHUNK_SEC 0.8
+set_kv LIP_PATCH_STALE_SEC 2.0
+set_kv LIVEPORTRAIT_MAX_FRAMES 12
 
 echo "Updated $ENV_FILE for LivePortrait mode:"
 grep -E '^(AVATAR_MODE|MOUTH_DRIVE|FLP_)=' "$ENV_FILE"

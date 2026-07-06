@@ -33,7 +33,10 @@ cd "$FLP_ROOT"
 
 echo "==> [2/5] Installing Python packages (2–5 min)…"
 pip install -r requirements.txt
-pip install -U huggingface_hub onnxruntime-gpu omegaconf
+pip install -U huggingface_hub omegaconf
+# FLP requirements may pull onnxruntime-gpu 1.27+ (CUDA 13). Pin for CUDA 12 pods.
+bash "$SCRIPT_DIR/fix_onnx_cuda.sh"
+python "$SCRIPT_DIR/patch_flp_compat.py" "$FLP_ROOT"
 
 mkdir -p "$CHECKPOINT_DIR"
 
@@ -48,6 +51,10 @@ hf_download_repo jdh-algo/JoyVASA "$CHECKPOINT_DIR/JoyVASA"
 echo ""
 echo "==> [5/5] Downloading Chinese-HuBERT…"
 hf_download_repo TencentGameMate/chinese-hubert-base "$CHECKPOINT_DIR/chinese-hubert-base"
+
+echo ""
+echo "==> Verifying onnxruntime GPU…"
+python -c "import onnxruntime as ort; assert 'CUDAExecutionProvider' in ort.get_available_providers()"
 
 echo ""
 echo "==> Verifying required files…"

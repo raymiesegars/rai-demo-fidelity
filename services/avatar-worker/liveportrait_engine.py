@@ -14,6 +14,66 @@ import numpy as np
 
 logger = logging.getLogger("liveportrait")
 
+
+def _check_onnxruntime_gpu() -> None:
+    """Fail fast with a clear fix when CUDA onnxruntime is broken."""
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        msg = str(exc)
+        if "libcudart.so.13" in msg:
+            raise RuntimeError(
+                "onnxruntime-gpu needs CUDA 13 but this pod has CUDA 12. "
+                "Run: bash fix_onnx_cuda.sh"
+            ) from exc
+        raise RuntimeError(
+            "onnxruntime not installed. Run: bash fix_onnx_cuda.sh"
+        ) from exc
+
+    ver = ort.__version__
+    parts = ver.split(".")
+    try:
+        major, minor = int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        major, minor = 0, 0
+    if (major, minor) >= (1, 27):
+        raise RuntimeError(
+            f"onnxruntime-gpu {ver} needs CUDA 13; this pod has CUDA 12. "
+            "Run: bash fix_onnx_cuda.sh"
+        )
+
+    providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" not in providers:
+        raise RuntimeError(
+            f"onnxruntime {ver} has no CUDA provider (providers={providers}). "
+            "Run: bash fix_onnx_cuda.sh"
+        )
+    logger.info("onnxruntime %s OK — %s", ver, providers)
+
+
+def preflight_liveportrait() -> None:
+    """Call before streaming so lip sync fails once with a clear fix."""
+    _check_onnxruntime_gpu()
+    _patch_torch_load_for_joyvasa()
+
+
+def _patch_torch_load_for_joyvasa() -> None:
+    """JoyVASA checkpoints need weights_only=False (PyTorch 2.6+ default is True)."""
+    import torch
+
+    if getattr(torch.load, "_joyvasa_patched", False):
+        return
+
+    _orig_load = torch.load
+
+    def _load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _orig_load(*args, **kwargs)
+
+    _load._joyvasa_patched = True  # type: ignore[attr-defined]
+    torch.load = _load  # type: ignore[assignment]
+    logger.debug("Patched torch.load for JoyVASA checkpoints")
+
 SAVE_WAV = None  # set after import from lip_sync
 
 
@@ -44,7 +104,7 @@ class LivePortraitEngine:
         return onnx.is_file() and joy.is_file() and hubert.is_file()
 
     def _ensure_loaded(self) -> None:
-        if self._pipe is not None:
+        if self._pipe is not None and self._joyvasa is not None:
             return
 
         if not self.is_ready():
@@ -56,7 +116,16 @@ class LivePortraitEngine:
         root = str(self.flp_root.resolve())
         if root not in sys.path:
             sys.path.insert(0, root)
+
+        from patch_flp_compat import apply_patches
+
+        apply_patches(self.flp_root)
+
         os.chdir(root)
+
+        _check_onnxruntime_gpu()
+        _patch_torch_load_for_joyvasa()
+        os.environ.setdefault("TRANSFORMERS_ATTN_IMPLEMENTATION", "eager")
 
         from omegaconf import OmegaConf
         from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
@@ -89,23 +158,39 @@ class LivePortraitEngine:
             if val and not Path(val).is_absolute():
                 setattr(jm, field, str(self.flp_root / str(val).lstrip("./")))
 
-        logger.info("Loading LivePortrait pipeline (onnx)…")
-        self._pipe = FasterLivePortraitPipeline(cfg=cfg, is_animal=False)
-        if not self._pipe.prepare_source(self.loop_video_path, realtime=True):
-            raise RuntimeError(f"No face detected in loop video: {self.loop_video_path}")
+        pipe = None
+        try:
+            logger.info("Loading LivePortrait pipeline (onnx)…")
+            pipe = FasterLivePortraitPipeline(cfg=cfg, is_animal=False)
+            if not pipe.prepare_source(self.loop_video_path, realtime=True):
+                raise RuntimeError(f"No face detected in loop video: {self.loop_video_path}")
 
-        self._joyvasa = JoyVASAAudio2MotionPipeline(
-            motion_model_path=jm.motion_model_path,
-            audio_model_path=jm.audio_model_path,
-            motion_template_path=jm.motion_template_path,
-            cfg_mode=cfg.infer_params.cfg_mode,
-            cfg_scale=float(cfg.infer_params.cfg_scale),
-        )
+            logger.info("Loading JoyVASA motion model…")
+            joyvasa = JoyVASAAudio2MotionPipeline(
+                motion_model_path=jm.motion_model_path,
+                audio_model_path=jm.audio_model_path,
+                motion_template_path=jm.motion_template_path,
+                cfg_mode=cfg.infer_params.cfg_mode,
+                cfg_scale=float(cfg.infer_params.cfg_scale),
+            )
+        except Exception:
+            if pipe is not None:
+                del pipe
+            self._pipe = None
+            self._joyvasa = None
+            raise
+
+        self._pipe = pipe
+        self._joyvasa = joyvasa
         logger.info(
             "LivePortrait ready — %d source frames, animation_region=%s",
             len(self._pipe.src_imgs),
             cfg.infer_params.animation_region,
         )
+
+    def warmup(self) -> None:
+        """Load models at startup so the first agent reply is not choppy."""
+        self._ensure_loaded()
 
     def render_wav(
         self, wav_path: str, start_frame_idx: int, reset_motion: bool = False
@@ -121,8 +206,10 @@ class LivePortraitEngine:
                 return []
 
             src_n = len(self._pipe.src_imgs)
+            max_frames = int(os.environ.get("LIVEPORTRAIT_MAX_FRAMES", "12"))
+            step = max(1, n_frames // max_frames) if n_frames > max_frames else 1
             out: list[np.ndarray] = []
-            for i in range(n_frames):
+            for i in range(0, n_frames, step):
                 idx = (start_frame_idx + i) % src_n
                 eyes = (
                     motion["c_eyes_lst"][i]
@@ -141,7 +228,7 @@ class LivePortraitEngine:
                     self._pipe.src_imgs[idx],
                     self._pipe.src_infos[idx],
                     first_frame=first,
-                    realtime=True,
+                    realtime=False,  # must be False for pasteback onto full loop frame
                 )
                 if out_org is None:
                     continue

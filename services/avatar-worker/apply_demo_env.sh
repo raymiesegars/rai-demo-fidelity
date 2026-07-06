@@ -21,7 +21,7 @@ set_kv() {
 set_kv AVATAR_MODE mock
 set_kv MOUTH_DRIVE idle
 
-echo "Updated $ENV_FILE for clean idle-loop demo:"
+echo "Updated $ENV_FILE for idle-loop demo (no mouth animation):"
 grep -E '^(AVATAR_MODE|MOUTH_DRIVE)=' "$ENV_FILE"
 echo ""
-echo "Alan will loop naturally while the agent speaks. Lip sync comes next (see README.md)."
+echo "For speech-synced mouth, use: bash start_reactive.sh"

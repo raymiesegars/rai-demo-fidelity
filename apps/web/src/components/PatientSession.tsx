@@ -380,7 +380,7 @@ export default function PatientSession() {
           <h1 className="text-2xl font-semibold text-white">Talk with Alan</h1>
           <p className="mt-2 text-sm leading-relaxed text-slate-400">
             High-fidelity patient avatar demo. Connect to start a LiveKit session,
-            then type to converse. Alan responds with voice; video loops while we upgrade lip sync.
+            then type to converse. Alan responds with voice and his mouth moves in sync with speech.
           </p>
           {error && (
             <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">

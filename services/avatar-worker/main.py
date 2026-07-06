@@ -20,7 +20,8 @@ from livekit import api, rtc
 
 from lip_sync import Wav2LipEngine, save_wav_int16
 from composite import composite_lip_patch
-from liveportrait_engine import LivePortraitEngine
+from speech_reactive import SpeechReactiveMouth
+from liveportrait_engine import LivePortraitEngine, preflight_liveportrait
 
 load_dotenv()
 
@@ -136,15 +137,19 @@ class AvatarPublisher:
         self.source = source
         self.fps = fps
         mouth_drive = os.environ.get("MOUTH_DRIVE", "idle").lower()
+        avatar_mode = os.environ.get("AVATAR_MODE", "mock").lower()
 
         self._lp = liveportrait if liveportrait and liveportrait.is_ready() else None
         self._wav = None
-        if self._lp is None and mouth_drive == "composite" and lipsync and lipsync.is_ready():
-            self._wav = lipsync
+        self._reactive: SpeechReactiveMouth | None = None
 
-        if self._lp is not None:
+        if avatar_mode == "reactive" or mouth_drive == "reactive":
+            self._drive = "reactive"
+            self._reactive = SpeechReactiveMouth()
+        elif self._lp is not None:
             self._drive = "liveportrait"
-        elif self._wav is not None:
+        elif mouth_drive == "composite" and lipsync and lipsync.is_ready():
+            self._wav = lipsync
             self._drive = "composite"
         else:
             self._drive = "idle"
@@ -171,19 +176,27 @@ class AvatarPublisher:
             )
         )
         self._patch_stale_sec = float(os.environ.get("LIP_PATCH_STALE_SEC", "0.25"))
+        self._max_lip_lag_sec = float(os.environ.get("MAX_LIP_LAG_SEC", "2.5"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
         self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
         self._active_agent: str | None = None
+        self._agent_locked = False
         self._subscribed_audio_sids: set[str] = set()
         self._drive_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="lip-drive"
         )
         self._wav_queue: asyncio.Queue[tuple[str, float, float, int, bool] | None] = (
-            asyncio.Queue(maxsize=2)
+            asyncio.Queue(maxsize=1)
         )
         self._reset_next_motion = True
+        self._logged_audio = False
 
-        if self._drive == "liveportrait":
+        if self._drive == "reactive":
+            logger.info(
+                "Mouth drive: reactive — instant audio-synced mouth on loop "
+                "(no LivePortrait / Wav2Lip)"
+            )
+        elif self._drive == "liveportrait":
             logger.info(
                 "Mouth drive: liveportrait — JoyVASA + LivePortrait "
                 "(first_chunk=%.2fs, chunk=%.2fs)",
@@ -200,25 +213,47 @@ class AvatarPublisher:
         else:
             logger.info("Mouth drive: idle — ping-pong loop only")
 
+    def unlock_agent(self) -> None:
+        """Call when a user joins so the next agent with audio is used."""
+        if self._active_agent is None and not self._agent_locked:
+            return
+        logger.info("User joined — clearing agent lock for fresh session")
+        self._active_agent = None
+        self._agent_locked = False
+        self._subscribed_audio_sids.clear()
+        self._logged_audio = False
+
     def set_active_agent(self, identity: str) -> None:
         if self._active_agent == identity:
             return
+        if self._agent_locked and self._active_agent is not None:
+            return
         logger.info("Active agent for lip sync: %s", identity)
         self._active_agent = identity
+        self._agent_locked = True
         self._audio_buffer.clear()
         self._buffer_start_time = 0.0
         self._chunks_sent = 0
         self._frame_queue.clear()
         self._reset_next_motion = True
         self._subscribed_audio_sids.clear()
+        self._logged_audio = False
 
     def append_audio(self, pcm: np.ndarray, agent_identity: str) -> None:
         if pcm.size == 0 or agent_identity != self._active_agent:
             return
+        if not getattr(self, "_logged_audio", False):
+            logger.info("Receiving agent audio from %s", agent_identity)
+            self._logged_audio = True
         pcm = pcm.astype(np.int16)
         energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
         self._last_energy = energy
         now = time.monotonic()
+        if self._drive == "reactive" and self._reactive is not None:
+            self._reactive.update(energy)
+            if energy >= self._animation_threshold:
+                self._last_audio_at = now
+            return
         if energy >= self._animation_threshold:
             self._last_audio_at = now
         if energy < self._buffer_threshold:
@@ -232,7 +267,7 @@ class AvatarPublisher:
         self._last_audio_at = now
 
     def _prepare_chunk(self) -> tuple[np.ndarray, float, float] | None:
-        if not self._audio_buffer or self._drive == "idle":
+        if not self._audio_buffer or self._drive in ("idle", "reactive"):
             return None
         samples = np.concatenate(self._audio_buffer)
         duration = len(samples) / 48000
@@ -283,11 +318,12 @@ class AvatarPublisher:
         kept = 0
 
         if now >= end:
-            if not self._is_speaking():
+            if lag > self._max_lip_lag_sec:
                 logger.info(
-                    "Dropped %d driven frames — speech ended (lag=%.0fms)",
+                    "Skipping %d frames — too late for sync (lag=%.0fms, max=%.0fms)",
                     n,
                     lag * 1000,
+                    self._max_lip_lag_sec * 1000,
                 )
                 return
             t0, span = now, chunk_dur
@@ -364,14 +400,16 @@ class AvatarPublisher:
                     frames = []
                 if frames:
                     self._enqueue_frames(frames, chunk_start, chunk_dur)
+            except RuntimeError as exc:
+                if "fix_onnx_cuda" in str(exc).lower():
+                    logger.error("Fatal lip-sync setup error: %s", exc)
+                    break
+                logger.exception("Lip drive failed")
             except Exception:
                 logger.exception("Lip drive failed")
             finally:
                 Path(wav_path).unlink(missing_ok=True)
                 self._wav_queue.task_done()
-
-    def _is_speaking(self) -> bool:
-        return time.monotonic() - self._last_audio_at < 0.8
 
     def next_display_frame(self) -> np.ndarray:
         now = time.monotonic()
@@ -384,7 +422,18 @@ class AvatarPublisher:
         if self._frame_queue and self._frame_queue[0].play_at <= now:
             return self._frame_queue.popleft().frame
 
-        return self.loop.next_idle_frame()
+        base = self.loop.next_idle_frame()
+        if self._drive == "reactive" and self._reactive is not None:
+            return self._reactive.apply(base, self.loop.current_box())
+        return base
+
+    def _is_speaking(self) -> bool:
+        if self._drive == "reactive" and self._reactive is not None:
+            return (
+                self._reactive.openness > 0.05
+                or time.monotonic() - self._last_audio_at < 0.5
+            )
+        return time.monotonic() - self._last_audio_at < 0.8
 
     async def _utterance_worker(self) -> None:
         while True:
@@ -396,7 +445,11 @@ class AvatarPublisher:
 
     async def publish_forever(self, room: rtc.Room) -> None:
         utterance_task = asyncio.create_task(self._utterance_worker())
-        drive_task = asyncio.create_task(self._drive_worker())
+        drive_task = (
+            asyncio.create_task(self._drive_worker())
+            if self._drive not in ("idle", "reactive")
+            else None
+        )
         interval = 1.0 / self.fps
         tick = 0
         try:
@@ -421,9 +474,10 @@ class AvatarPublisher:
                 await asyncio.sleep(interval)
         finally:
             utterance_task.cancel()
-            if self._drive != "idle":
-                await self._wav_queue.put(None)
-            drive_task.cancel()
+            if drive_task is not None:
+                if self._drive not in ("idle", "reactive"):
+                    await self._wav_queue.put(None)
+                drive_task.cancel()
             self._drive_executor.shutdown(wait=False, cancel_futures=True)
 
 
@@ -454,13 +508,17 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
         liveportrait = LivePortraitEngine(loop_path)
         if liveportrait.is_ready():
             logger.info("LivePortrait engine found at %s", liveportrait.flp_root)
+            preflight_liveportrait()
+            logger.info("Preloading LivePortrait models (~30s first time)…")
+            await asyncio.get_running_loop().run_in_executor(None, liveportrait.warmup)
+            logger.info("LivePortrait preload complete")
         else:
             logger.warning(
-                "AVATAR_MODE=liveportrait but models missing — idle loop. "
+                "AVATAR_MODE=liveportrait but models missing — falling back to reactive. "
                 "Run: bash setup_liveportrait.sh"
             )
             liveportrait = None
-            mode = "mock"
+            mode = "reactive"
     elif mode == "wav2lip" and mouth_drive == "composite":
         lipsync = Wav2LipEngine(loop_video_path=loop_path)
         if lipsync.is_ready():
@@ -469,7 +527,9 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
 
     loop = AudioReactiveLoop(loop_path, face_boxes)
 
-    if mode == "mock" and liveportrait is None:
+    if mode == "reactive":
+        logger.info("Avatar mode: reactive — instant speech-synced mouth on loop")
+    elif mode == "mock":
         logger.info("Avatar mode: mock — idle loop (voice + chat)")
 
     room = rtc.Room()
@@ -501,8 +561,13 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
             return
         if not is_agent_participant(participant):
             return
-        if publisher._active_agent != participant.identity:
+        if (
+            publisher._agent_locked
+            and publisher._active_agent
+            and publisher._active_agent != participant.identity
+        ):
             return
+        publisher.set_active_agent(participant.identity)
         sid = track.sid
         if sid in publisher._subscribed_audio_sids:
             return
@@ -513,9 +578,11 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
     @room.on("participant_connected")
     def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
         logger.info("Participant joined: %s", participant.identity)
+        if participant.identity.startswith("user-"):
+            publisher.unlock_agent()
+            return
         if not is_agent_participant(participant):
             return
-        publisher.set_active_agent(participant.identity)
         for pub in participant.track_publications.values():
             if pub.track:
                 maybe_subscribe_agent_audio(pub.track, participant)
