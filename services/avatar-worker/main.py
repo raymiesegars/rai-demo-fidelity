@@ -320,6 +320,19 @@ class AvatarPublisher:
         self._last_speech_at = now
         self._last_audio_at = now
 
+    def pulse_mouth(self, char_count: int) -> None:
+        if self._reactive is None:
+            return
+        duration = max(0.9, min(5.0, char_count * 0.038))
+        self._reactive.start_utterance(duration)
+        self._last_audio_at = time.monotonic()
+
+    def note_agent_speaking(self) -> None:
+        if self._reactive is None:
+            return
+        self._reactive.note_active_speaker()
+        self._last_audio_at = time.monotonic()
+
     def _prepare_chunk(self) -> tuple[np.ndarray, float, float] | None:
         if not self._audio_buffer or self._drive in ("idle", "reactive"):
             return None
@@ -484,7 +497,7 @@ class AvatarPublisher:
     def _is_speaking(self) -> bool:
         if self._drive == "reactive" and self._reactive is not None:
             return (
-                self._reactive.openness > 0.05
+                self._reactive.openness > 0.04
                 or time.monotonic() - self._last_audio_at < 0.5
             )
         return time.monotonic() - self._last_audio_at < 0.8
@@ -553,7 +566,10 @@ async def consume_agent_audio(
     async for event in stream:
         if agent_identity != publisher._active_agent:
             return
-        pcm = np.frombuffer(event.frame.data, dtype=np.int16)
+        frame = event.frame
+        pcm = np.frombuffer(bytes(frame.data), dtype=np.int16)
+        if frame.num_channels > 1 and pcm.size:
+            pcm = pcm.reshape(-1, frame.num_channels)[:, 0].copy()
         publisher.append_audio(pcm, agent_identity)
 
 
@@ -681,6 +697,26 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
         participant: rtc.RemoteParticipant,
     ) -> None:
         maybe_subscribe_agent_audio(track, participant)
+
+    @room.on("active_speakers_changed")
+    def on_active_speakers(speakers: list[rtc.Participant]) -> None:
+        if publisher._active_agent is None:
+            return
+        for speaker in speakers:
+            if speaker.identity == publisher._active_agent:
+                publisher.note_agent_speaking()
+                return
+
+    @room.on("data_received")
+    def on_agent_data(data: rtc.DataPacket) -> None:
+        if data.topic != "agent_reply":
+            return
+        try:
+            payload = json.loads(data.data.decode("utf-8"))
+            chars = int(payload.get("charCount", 40))
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+            chars = 40
+        publisher.pulse_mouth(chars)
 
     await publisher.publish_forever(room)
 

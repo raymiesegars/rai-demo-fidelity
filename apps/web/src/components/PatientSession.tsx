@@ -1,19 +1,12 @@
 "use client";
 
 import {
+  RoomAudioRenderer,
   RoomContext,
-  useRoomContext,
   VideoTrack,
   useTracks,
 } from "@livekit/components-react";
-import {
-  ConnectionState,
-  RemoteParticipant,
-  RemoteTrack,
-  Room,
-  RoomEvent,
-  Track,
-} from "livekit-client";
+import { ConnectionState, Room, RoomEvent, Track } from "livekit-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   estimateSessionCostUsd,
@@ -31,69 +24,6 @@ type SessionStats = {
   turnCount: number;
   ttsCharacters: number;
 };
-
-function newestAgent(participants: Iterable<RemoteParticipant>) {
-  const agents = [...participants].filter((p) =>
-    p.identity.toLowerCase().includes("agent"),
-  );
-  if (agents.length === 0) return null;
-  return agents.reduce((latest, p) =>
-    p.identity > latest.identity ? p : latest,
-  );
-}
-
-function SingleAgentAudio() {
-  const room = useRoomContext();
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const boundAgentRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!room) return;
-
-    const attachNewestAgent = () => {
-      const agent = newestAgent(room.remoteParticipants.values());
-      const el = audioRef.current;
-      if (!agent || !el) return;
-
-      if (boundAgentRef.current && boundAgentRef.current !== agent.identity) {
-        el.srcObject = null;
-      }
-
-      for (const pub of agent.audioTrackPublications.values()) {
-        const track = pub.track;
-        if (track) {
-          track.attach(el);
-          boundAgentRef.current = agent.identity;
-          void el.play().catch(() => {
-            /* startAudio() handles browser unlock */
-          });
-          return;
-        }
-      }
-    };
-
-    const onTrackSubscribed = (
-      track: RemoteTrack,
-      _pub: unknown,
-      participant: RemoteParticipant,
-    ) => {
-      if (track.kind !== Track.Kind.Audio) return;
-      if (!participant.identity.toLowerCase().includes("agent")) return;
-      attachNewestAgent();
-    };
-
-    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
-    room.on(RoomEvent.ParticipantConnected, attachNewestAgent);
-    attachNewestAgent();
-
-    return () => {
-      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
-      room.off(RoomEvent.ParticipantConnected, attachNewestAgent);
-    };
-  }, [room]);
-
-  return <audio ref={audioRef} autoPlay playsInline className="hidden" />;
-}
 
 function PatientVideo() {
   const tracks = useTracks(
@@ -230,6 +160,7 @@ function SessionPanel({
   });
   const [sessionStart] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastReplyRef = useRef<{ text: string; at: number } | null>(null);
   const connectionState = room.state;
 
   useEffect(() => {
@@ -252,6 +183,15 @@ function SessionPanel({
         };
         if (data.text) {
           const replyText = data.text;
+          const now = Date.now();
+          if (
+            lastReplyRef.current &&
+            lastReplyRef.current.text === replyText &&
+            now - lastReplyRef.current.at < 4000
+          ) {
+            return;
+          }
+          lastReplyRef.current = { text: replyText, at: now };
           setMessages((prev) => [
             ...prev,
             {
@@ -391,7 +331,7 @@ function SessionPanel({
         </button>
       </div>
 
-      <SingleAgentAudio />
+      <RoomAudioRenderer />
     </div>
   );
 }

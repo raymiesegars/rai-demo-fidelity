@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -55,6 +54,21 @@ def build_llm() -> llm.LLM:
 server = AgentServer()
 
 
+def agent_identities(room: rtc.Room, local_identity: str) -> list[str]:
+    ids = [
+        p.identity
+        for p in room.remote_participants.values()
+        if p.identity.startswith("agent-")
+    ]
+    ids.append(local_identity)
+    return ids
+
+
+def is_primary_agent(room: rtc.Room, local_identity: str) -> bool:
+    agents = agent_identities(room, local_identity)
+    return local_identity == max(agents)
+
+
 @server.rtc_session(agent_name="patient-agent")
 async def entrypoint(ctx: JobContext) -> None:
     voice_id = os.environ.get(
@@ -66,11 +80,7 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=cartesia.TTS(voice=voice_id),
     )
     superseded = False
-    started_at = time.monotonic()
     local_identity = ""
-
-    def is_agent_identity(identity: str) -> bool:
-        return identity.startswith("agent-")
 
     async def retire(reason: str) -> None:
         nonlocal superseded
@@ -82,22 +92,15 @@ async def entrypoint(ctx: JobContext) -> None:
             await session.aclose()
         except Exception:
             logger.exception("Error closing superseded session")
+        try:
+            await ctx.room.disconnect()
+        except Exception:
+            logger.exception("Error disconnecting superseded agent from room")
         ctx.shutdown(reason)
 
-    @ctx.room.on("participant_connected")
-    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
-        if not is_agent_identity(participant.identity):
-            return
-        if participant.identity == local_identity:
-            return
-        # Only stale workers retire when someone new joins — not the worker that just started.
-        if time.monotonic() - started_at < 5.0:
-            return
-        asyncio.create_task(
-            retire(f"newer agent joined ({participant.identity})")
-        )
-
     async def publish_to_client(payload: dict) -> None:
+        if not is_primary_agent(ctx.room, local_identity):
+            return
         await ctx.room.local_participant.publish_data(
             json.dumps(payload).encode(),
             reliable=True,
@@ -106,6 +109,10 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev: ConversationItemAddedEvent) -> None:
+        if superseded or not local_identity:
+            return
+        if not is_primary_agent(ctx.room, local_identity):
+            return
         item = ev.item
         role = getattr(item, "role", None)
         if role != "assistant":
@@ -133,10 +140,24 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = PatientAgent()
     await session.start(agent=agent, room=ctx.room)
     local_identity = ctx.room.local_participant.identity
+    logger.info("Patient agent ready in room %s as %s", ctx.room.name, local_identity)
+
+    @ctx.room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        if not participant.identity.startswith("agent-"):
+            return
+        if participant.identity == local_identity:
+            return
+        if participant.identity > local_identity:
+            asyncio.create_task(
+                retire(f"newer agent joined ({participant.identity})")
+            )
 
     @ctx.room.on("data_received")
     def on_data(data: rtc.DataPacket) -> None:
-        if superseded:
+        if superseded or not local_identity:
+            return
+        if not is_primary_agent(ctx.room, local_identity):
             return
         if data.topic != "user_text":
             return
@@ -160,8 +181,6 @@ async def entrypoint(ctx: JobContext) -> None:
                     raise
 
         safe_reply()
-
-    logger.info("Patient agent ready in room %s", ctx.room.name)
 
 
 if __name__ == "__main__":
