@@ -92,9 +92,11 @@ class AvatarPublisher:
         self._lipsync_queue: deque[np.ndarray] = deque()
         self._audio_buffer: list[np.ndarray] = []
         self._last_audio_at = 0.0
+        self._last_energy = 0.0
         self._processing = False
         self._silence_seconds = float(os.environ.get("UTTERANCE_SILENCE_SEC", "0.45"))
         self._min_utterance_sec = float(os.environ.get("MIN_UTTERANCE_SEC", "0.35"))
+        self._subscribed_audio_sids: set[str] = set()
 
     def push_lipsync_frames(self, frames: list[np.ndarray]) -> None:
         self._lipsync_queue.extend(frames)
@@ -102,8 +104,10 @@ class AvatarPublisher:
     def append_audio(self, pcm: np.ndarray) -> None:
         if pcm.size == 0:
             return
-        self._audio_buffer.append(pcm.astype(np.int16))
+        pcm = pcm.astype(np.int16)
+        self._audio_buffer.append(pcm)
         self._last_audio_at = time.monotonic()
+        self._last_energy = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
 
     async def maybe_flush_utterance(self) -> None:
         if self._processing or not self._audio_buffer:
@@ -151,9 +155,20 @@ class AvatarPublisher:
         finally:
             self._processing = False
 
+    def _is_speaking(self) -> bool:
+        return time.monotonic() - self._last_audio_at < 0.12
+
     def next_display_frame(self) -> np.ndarray:
         if self._lipsync_queue:
             return self._lipsync_queue.popleft()
+        # While agent TTS is playing, advance the idle loop faster so the face
+        # moves until Wav2Lip frames are ready (or as fallback in mock mode).
+        if self._is_speaking():
+            extra_steps = min(4, 1 + int(self._last_energy / 4000))
+            frame = self.loop.next_frame()
+            for _ in range(extra_steps - 1):
+                frame = self.loop.next_frame()
+            return frame
         return self.loop.next_frame()
 
     async def publish_forever(self, room: rtc.Room) -> None:
@@ -214,28 +229,55 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
 
     publisher = AvatarPublisher(loop, source, lipsync, fps)
 
-    @room.on("track_subscribed")
-    def on_track_subscribed(
+    def maybe_subscribe_agent_audio(
         track: rtc.Track,
-        publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
         if not is_agent_participant(participant):
             return
-        logger.info("Agent audio track from %s", participant.identity)
+        sid = track.sid
+        if sid in publisher._subscribed_audio_sids:
+            return
+        publisher._subscribed_audio_sids.add(sid)
+        logger.info(
+            "Agent audio track from %s (sid=%s) — lip sync %s",
+            participant.identity,
+            sid,
+            "enabled" if lipsync and lipsync.is_ready() else "pending (run setup_wav2lip.sh)",
+        )
         asyncio.create_task(consume_agent_audio(track, publisher))
 
-    # Catch agent already in room
-    for participant in room.remote_participants.values():
+    @room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        logger.info("Participant joined: %s", participant.identity)
         for pub in participant.track_publications.values():
-            if (
-                pub.track
-                and pub.kind == rtc.TrackKind.KIND_AUDIO
-                and is_agent_participant(participant)
-            ):
-                asyncio.create_task(consume_agent_audio(pub.track, publisher))
+            if pub.track and pub.subscribed:
+                maybe_subscribe_agent_audio(pub.track, participant)
+
+    @room.on("track_published")
+    def on_track_published(
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if publication.track:
+            maybe_subscribe_agent_audio(publication.track, participant)
+
+    @room.on("track_subscribed")
+    def on_track_subscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        maybe_subscribe_agent_audio(track, participant)
+
+    # Catch participants already in room when avatar connects
+    for participant in room.remote_participants.values():
+        logger.info("Already in room: %s", participant.identity)
+        for pub in participant.track_publications.values():
+            if pub.track:
+                maybe_subscribe_agent_audio(pub.track, participant)
 
     await publisher.publish_forever(room)
 
