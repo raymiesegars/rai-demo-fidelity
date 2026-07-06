@@ -58,6 +58,47 @@ def main() -> None:
         [("cv2.cv2.ROTATE_90_CLOCKWISE", "cv2.ROTATE_90_CLOCKWISE")],
     )
 
+    text = inference.read_text(encoding="utf-8")
+    if "--boxes_file" not in text:
+        text = text.replace(
+            "parser.add_argument('--nosmooth', default=False, action='store_true',\n"
+            "\thelp='Prevent smoothing face detections over a short temporal window')",
+            "parser.add_argument('--nosmooth', default=False, action='store_true',\n"
+            "\thelp='Prevent smoothing face detections over a short temporal window')\n\n"
+            "parser.add_argument('--boxes_file', type=str, default=None,\n"
+            "\thelp='JSON file with per-frame face boxes [y1,y2,x1,x2]')",
+        )
+        text = text.replace(
+            "\tif args.box[0] == -1:\n"
+            "\t\tif not args.static:\n"
+            "\t\t\tface_det_results = face_detect(frames) # BGR2RGB for CNN face detection\n"
+            "\t\telse:\n"
+            "\t\t\tface_det_results = face_detect([frames[0]])\n"
+            "\telse:\n"
+            "\t\tprint('Using the specified bounding box instead of face detection...')\n"
+            "\t\ty1, y2, x1, x2 = args.box\n"
+            "\t\tface_det_results = [[f[y1: y2, x1:x2], (y1, y2, x1, x2)] for f in frames]",
+            "\tif args.boxes_file:\n"
+            "\t\tprint('Using cached per-frame face boxes...')\n"
+            "\t\twith open(args.boxes_file) as jf:\n"
+            "\t\t\tcached_boxes = json.load(jf)\n"
+            "\t\tface_det_results = []\n"
+            "\t\tfor i, f in enumerate(frames):\n"
+            "\t\t\ty1, y2, x1, x2 = cached_boxes[i % len(cached_boxes)]\n"
+            "\t\t\tface_det_results.append([f[y1:y2, x1:x2], (y1, y2, x1, x2)])\n"
+            "\telif args.box[0] == -1:\n"
+            "\t\tif not args.static:\n"
+            "\t\t\tface_det_results = face_detect(frames) # BGR2RGB for CNN face detection\n"
+            "\t\telse:\n"
+            "\t\t\tface_det_results = face_detect([frames[0]])\n"
+            "\telse:\n"
+            "\t\tprint('Using the specified bounding box instead of face detection...')\n"
+            "\t\ty1, y2, x1, x2 = args.box\n"
+            "\t\tface_det_results = [[f[y1: y2, x1:x2], (y1, y2, x1, x2)] for f in frames]",
+        )
+        inference.write_text(text, encoding="utf-8")
+        print("  patched inference.py (boxes_file)")
+
     # librosa 0.10 removed positional mel args in some builds — ensure kwargs form
     audio = root / "audio.py"
     audio_text = audio.read_text(encoding="utf-8")

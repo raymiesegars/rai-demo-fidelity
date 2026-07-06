@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -53,20 +54,12 @@ def checkpoint_is_valid(path: Path) -> bool:
         return False
 
 
-def detect_face_box(video_path: str, wav2lip_root: Path) -> tuple[int, int, int, int]:
-    """Detect face once at startup — skips ~15s face-det pass on every utterance."""
+def _import_face_detector(wav2lip_root: Path):
     root = str(wav2lip_root.resolve())
     if root not in sys.path:
         sys.path.insert(0, root)
-
     import torch
     import face_detection  # noqa: Wav2Lip local package
-
-    cap = cv2.VideoCapture(video_path)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        raise RuntimeError(f"Cannot read frame from {video_path}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     detector = face_detection.FaceAlignment(
@@ -74,23 +67,58 @@ def detect_face_box(video_path: str, wav2lip_root: Path) -> tuple[int, int, int,
         flip_input=False,
         device=device,
     )
+    return detector, torch
+
+
+def _smooth_boxes(boxes: np.ndarray, window: int = 5) -> np.ndarray:
+    smoothed = boxes.copy()
+    for i in range(len(smoothed)):
+        if i + window > len(smoothed):
+            chunk = smoothed[len(smoothed) - window :]
+        else:
+            chunk = smoothed[i : i + window]
+        smoothed[i] = np.mean(chunk, axis=0)
+    return smoothed
+
+
+def compute_per_frame_boxes(video_path: str, wav2lip_root: Path) -> list[list[int]]:
+    """Detect face on every loop frame once — required for idle animations."""
+    detector, _torch = _import_face_detector(wav2lip_root)
+
+    frames_bgr: list[np.ndarray] = []
+    cap = cv2.VideoCapture(video_path)
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames_bgr.append(frame)
+    cap.release()
+    if not frames_bgr:
+        raise RuntimeError(f"No frames in {video_path}")
+
+    batch_size = 16
+    predictions: list = []
     try:
-        batch = np.asarray([frame])
-        rect = detector.get_detections_for_batch(batch)[0]
+        for i in range(0, len(frames_bgr), batch_size):
+            batch = np.asarray(frames_bgr[i : i + batch_size])
+            predictions.extend(detector.get_detections_for_batch(batch))
     finally:
         del detector
 
-    if rect is None:
-        raise RuntimeError("Face not detected in patient loop — check alan-loop.mp4")
-
-    x1, y1, x2, y2 = rect
     pady1, pady2, padx1, padx2 = 0, 10, 0, 0
-    y1 = max(0, int(y1) - pady1)
-    y2 = min(frame.shape[0], int(y2) + pady2)
-    x1 = max(0, int(x1) - padx1)
-    x2 = min(frame.shape[1], int(x2) + padx2)
-    logger.info("Cached face box for loop: top=%d bottom=%d left=%d right=%d", y1, y2, x1, x2)
-    return y1, y2, x1, x2
+    boxes: list[list[int]] = []
+    for rect, image in zip(predictions, frames_bgr):
+        if rect is None:
+            raise RuntimeError("Face not detected in patient loop frame")
+        y1 = max(0, int(rect[1]) - pady1)
+        y2 = min(image.shape[0], int(rect[3]) + pady2)
+        x1 = max(0, int(rect[0]) - padx1)
+        x2 = min(image.shape[1], int(rect[2]) + padx2)
+        boxes.append([y1, y2, x1, x2])
+
+    smoothed = _smooth_boxes(np.array(boxes, dtype=float)).astype(int).tolist()
+    logger.info("Cached %d per-frame face boxes for loop video", len(smoothed))
+    return smoothed
 
 
 class Wav2LipEngine:
@@ -114,11 +142,21 @@ class Wav2LipEngine:
             )
         )
         self.inference_py = self.wav2lip_root / "inference.py"
-        self.resize_factor = int(os.environ.get("WAV2LIP_RESIZE_FACTOR", "2"))
-        self._face_box: tuple[int, int, int, int] | None = None
+        self._boxes_file: Path | None = None
 
         if self.is_ready():
-            self._face_box = detect_face_box(self.loop_video_path, self.wav2lip_root)
+            boxes_path = self.wav2lip_root / "temp" / "alan_face_boxes.json"
+            if boxes_path.is_file():
+                with boxes_path.open(encoding="utf-8") as f:
+                    cached = json.load(f)
+                if len(cached) > 0:
+                    logger.info("Loaded %d cached face boxes", len(cached))
+                    self._boxes_file = boxes_path
+            if self._boxes_file is None:
+                boxes = compute_per_frame_boxes(self.loop_video_path, self.wav2lip_root)
+                boxes_path.parent.mkdir(parents=True, exist_ok=True)
+                boxes_path.write_text(json.dumps(boxes), encoding="utf-8")
+                self._boxes_file = boxes_path
 
     def is_ready(self) -> bool:
         return (
@@ -128,10 +166,9 @@ class Wav2LipEngine:
         )
 
     def sync_utterance(self, audio_wav: str) -> list[np.ndarray]:
-        if not self.is_ready() or self._face_box is None:
-            raise RuntimeError("Wav2Lip not ready or face box not cached")
+        if not self.is_ready() or self._boxes_file is None:
+            raise RuntimeError("Wav2Lip not ready or face boxes not cached")
 
-        y1, y2, x1, x2 = self._face_box
         with tempfile.TemporaryDirectory() as tmp:
             out_mp4 = str(Path(tmp) / "lipsync.mp4")
             cmd = [
@@ -147,13 +184,8 @@ class Wav2LipEngine:
                 out_mp4,
                 "--fps",
                 os.environ.get("TARGET_FPS", "25"),
-                "--resize_factor",
-                str(self.resize_factor),
-                "--box",
-                str(y1),
-                str(y2),
-                str(x1),
-                str(x2),
+                "--boxes_file",
+                str(self._boxes_file),
                 "--wav2lip_batch_size",
                 "128",
             ]
