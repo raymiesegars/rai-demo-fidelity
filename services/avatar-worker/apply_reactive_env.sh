@@ -20,9 +20,10 @@ set_kv() {
 set_kv AVATAR_MODE reactive
 set_kv MOUTH_DRIVE reactive
 set_kv ENERGY_MOUTH 0
-set_kv ANIMATION_ENERGY_THRESHOLD 20
-set_kv MOUTH_SENSITIVITY 900
-set_kv MOUTH_MAX_STRETCH 0.22
+set_kv ANIMATION_ENERGY_THRESHOLD 8
+set_kv MOUTH_SENSITIVITY 450
+set_kv MOUTH_MAX_STRETCH 0.32
+set_kv MOUTH_WARMTH 0.10
 
 echo "Updated $ENV_FILE for speech-reactive mode:"
 grep -E '^(AVATAR_MODE|MOUTH_|ENERGY_|ANIMATION_)' "$ENV_FILE"

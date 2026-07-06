@@ -178,10 +178,13 @@ class AvatarPublisher:
         self._patch_stale_sec = float(os.environ.get("LIP_PATCH_STALE_SEC", "0.25"))
         self._max_lip_lag_sec = float(os.environ.get("MAX_LIP_LAG_SEC", "2.5"))
         self._buffer_threshold = float(os.environ.get("AUDIO_BUFFER_THRESHOLD", "40"))
-        self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "25"))
+        self._animation_threshold = float(os.environ.get("ANIMATION_ENERGY_THRESHOLD", "8"))
         self._active_agent: str | None = None
         self._agent_locked = False
         self._subscribed_audio_sids: set[str] = set()
+        self._users_in_room = 0
+        self._agent_seq = 0
+        self._agent_order: dict[str, int] = {}
         self._drive_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="lip-drive"
         )
@@ -213,8 +216,23 @@ class AvatarPublisher:
         else:
             logger.info("Mouth drive: idle — ping-pong loop only")
 
+    def note_agent(self, identity: str) -> None:
+        if identity not in self._agent_order:
+            self._agent_seq += 1
+            self._agent_order[identity] = self._agent_seq
+
+    def newest_agent_identity(self, room: rtc.Room) -> str | None:
+        agents = [
+            p.identity
+            for p in room.remote_participants.values()
+            if is_agent_participant(p)
+        ]
+        if not agents:
+            return None
+        return max(agents, key=lambda i: self._agent_order.get(i, 0))
+
     def unlock_agent(self) -> None:
-        """Call when a user joins so the next agent with audio is used."""
+        """Call when a user joins so we can bind to the live session agent."""
         if self._active_agent is None and not self._agent_locked:
             return
         logger.info("User joined — clearing agent lock for fresh session")
@@ -222,6 +240,32 @@ class AvatarPublisher:
         self._agent_locked = False
         self._subscribed_audio_sids.clear()
         self._logged_audio = False
+        if self._reactive is not None:
+            self._reactive.reset()
+
+    def user_joined(self) -> None:
+        self._users_in_room += 1
+
+    def bind_agent_audio(
+        self,
+        track: rtc.Track,
+        identity: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if self._users_in_room == 0:
+            return
+        if not force and self._agent_locked and self._active_agent:
+            return
+        sid = track.sid
+        if sid in self._subscribed_audio_sids and self._active_agent == identity:
+            return
+        self.set_active_agent(identity)
+        if sid in self._subscribed_audio_sids:
+            return
+        self._subscribed_audio_sids.add(sid)
+        logger.info("Agent audio track: %s", identity)
+        asyncio.create_task(consume_agent_audio(track, self, identity))
 
     def set_active_agent(self, identity: str) -> None:
         if self._active_agent == identity:
@@ -465,11 +509,19 @@ class AvatarPublisher:
                 tick += 1
                 if tick % (self.fps * 15) == 0:
                     speaking = self._is_speaking()
+                    detail = ""
+                    if self._drive == "reactive" and self._reactive is not None:
+                        detail = (
+                            f", energy={self._last_energy:.0f}, "
+                            f"open={self._reactive.openness:.2f}, "
+                            f"agent={self._active_agent or 'none'}"
+                        )
                     logger.info(
-                        "Streaming OK — frame %d/%d, speaking=%s",
+                        "Streaming OK — frame %d/%d, speaking=%s%s",
                         self.loop._index,
                         len(self.loop.frames),
                         speaking,
+                        detail,
                     )
                 await asyncio.sleep(interval)
         finally:
@@ -553,6 +605,22 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
 
     publisher = AvatarPublisher(loop, source, fps, lipsync, liveportrait)
 
+    def rescan_agent_audio() -> None:
+        if publisher._users_in_room == 0:
+            return
+        identity = publisher.newest_agent_identity(room)
+        if not identity:
+            logger.warning("No agent in room — mouth sync waits for agent")
+            return
+        participant = room.remote_participants.get(identity)
+        if participant is None:
+            return
+        for pub in participant.track_publications.values():
+            if pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO:
+                publisher.bind_agent_audio(pub.track, identity, force=True)
+                return
+        logger.info("Newest agent %s has no audio track yet — waiting", identity)
+
     def maybe_subscribe_agent_audio(
         track: rtc.Track,
         participant: rtc.RemoteParticipant,
@@ -561,31 +629,40 @@ async def run_avatar(room_name: str, loop_path: str, fps: int, mode: str) -> Non
             return
         if not is_agent_participant(participant):
             return
-        if (
-            publisher._agent_locked
-            and publisher._active_agent
-            and publisher._active_agent != participant.identity
-        ):
+        publisher.note_agent(participant.identity)
+        if publisher._users_in_room == 0:
             return
-        publisher.set_active_agent(participant.identity)
-        sid = track.sid
-        if sid in publisher._subscribed_audio_sids:
+        identity = publisher.newest_agent_identity(room)
+        if identity != participant.identity:
             return
-        publisher._subscribed_audio_sids.add(sid)
-        logger.info("Agent audio track: %s", participant.identity)
-        asyncio.create_task(consume_agent_audio(track, publisher, participant.identity))
+        publisher.bind_agent_audio(track, participant.identity)
+
+    for participant in room.remote_participants.values():
+        if participant.identity.startswith("user-"):
+            publisher.user_joined()
+        elif is_agent_participant(participant):
+            publisher.note_agent(participant.identity)
+
+    if publisher._users_in_room > 0:
+        rescan_agent_audio()
 
     @room.on("participant_connected")
     def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
         logger.info("Participant joined: %s", participant.identity)
         if participant.identity.startswith("user-"):
+            publisher.user_joined()
             publisher.unlock_agent()
+            rescan_agent_audio()
             return
         if not is_agent_participant(participant):
             return
-        for pub in participant.track_publications.values():
-            if pub.track:
-                maybe_subscribe_agent_audio(pub.track, participant)
+        publisher.note_agent(participant.identity)
+        if publisher._users_in_room > 0:
+            rescan_agent_audio()
+        else:
+            for pub in participant.track_publications.values():
+                if pub.track:
+                    maybe_subscribe_agent_audio(pub.track, participant)
 
     @room.on("track_subscribed")
     def on_track_subscribed(
