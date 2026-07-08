@@ -34,5 +34,15 @@ checkpoints/
 *.onnx
 *.trt
 
+# Local lipsync (MuseTalk) — vendored repo, weights, ffmpeg, large assets
+services/lipsync/vendor/
+services/lipsync/models/
+services/lipsync/tools/
+services/lipsync/assets/*.mp4
+services/lipsync/results/
+*.pth
+*.bin
+*.safetensors
+
 # Logs
 *.log
