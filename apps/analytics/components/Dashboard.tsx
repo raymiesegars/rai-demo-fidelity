@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
 import type { ComparisonData, ComparisonRow, ModelDetail } from "@/lib/types";
 import {
@@ -121,7 +128,108 @@ const METRIC_DEFS: MetricDef[] = [
     better: "Higher is better (1–10)",
     body: "Curated operations score: self-hosting, Windows friendliness, dependency fragility, license, and day-2 restart pain. Not scored in the Demo UI — set in results JSON.",
   },
+  {
+    key: "languages_sort",
+    tab: "Langs",
+    title: "Languages (out of the box)",
+    better: "Depends on product needs",
+    body: "Count of languages named in official docs when a closed list exists. Any* = vendor claims language-agnostic / any language (not a finite pack). Audio* = audio-driven with no closed list published. — = no official pack (often an English-centric audio encoder). Full language lists and notes are in each model review.",
+  },
+  {
+    key: "license_display",
+    tab: "License",
+    title: "License / free-use",
+    better: "Commercial-friendly when your product needs it",
+    body: "Upstream SPDX / license tag from the project README or LICENSE. Commercial OK is a research summary of the open release — still verify deps, checkpoints, and local law. Caveats appear in each model review. Not legal advice.",
+  },
 ];
+
+function MatrixScroller({ children }: { children: ReactNode }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(false);
+
+  function updateEdges() {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setCanLeft(el.scrollLeft > 4);
+    setCanRight(max - el.scrollLeft > 4);
+  }
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    updateEdges();
+    el.addEventListener("scroll", updateEdges, { passive: true });
+    const ro = new ResizeObserver(updateEdges);
+    ro.observe(el);
+    window.addEventListener("resize", updateEdges);
+    return () => {
+      el.removeEventListener("scroll", updateEdges);
+      ro.disconnect();
+      window.removeEventListener("resize", updateEdges);
+    };
+  }, []);
+
+  function scrollByDir(dir: -1 | 1) {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(220, el.clientWidth * 0.55), behavior: "smooth" });
+  }
+
+  return (
+    <div
+      className={`matrix-scroller ${canLeft ? "has-left" : ""} ${canRight ? "has-right" : ""}`}
+    >
+      <div className="matrix-scroll-toolbar" aria-label="Matrix horizontal scroll">
+        <p className="matrix-scroll-hint">
+          {canRight || canLeft
+            ? "Wide table — scroll sideways to see Lips, Identity, Hosting, Langs, and License."
+            : "All columns visible."}
+        </p>
+        <div className="matrix-scroll-actions">
+          <button
+            type="button"
+            className="btn btn-sm matrix-scroll-btn"
+            onClick={() => scrollByDir(-1)}
+            disabled={!canLeft}
+            aria-label="Scroll matrix left"
+          >
+            ← Left
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm matrix-scroll-btn"
+            onClick={() => scrollByDir(1)}
+            disabled={!canRight}
+            aria-label="Scroll matrix right"
+          >
+            Right →
+          </button>
+        </div>
+      </div>
+      <div
+        className="tbl-wrap"
+        ref={scrollerRef}
+        tabIndex={0}
+        role="region"
+        aria-label="Comparison matrix — scroll horizontally"
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            scrollByDir(1);
+          } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            scrollByDir(-1);
+          }
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
 
 /** Cap axis so one outlier (e.g. Wav2Lip RTF) doesn't crush the rest. */
 function axisCeiling(finite: number[], mode: ChartScale): { max: number; clippedIds: boolean } {
@@ -307,9 +415,26 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 
 function compareRows(a: ComparisonRow, b: ComparisonRow, key: SortKey, dir: SortDir): number {
   const mul = dir === "asc" ? 1 : -1;
+  if (key === "languages_sort") {
+    const an = Number(a.languages_sort);
+    const bn = Number(b.languages_sort);
+    const aOk = Number.isFinite(an);
+    const bOk = Number.isFinite(bn);
+    if (!aOk && !bOk) return 0;
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    if (an === bn) return String(a.name).localeCompare(String(b.name));
+    return (an - bn) * mul;
+  }
   const av = key === "name" ? a.name : a[key as keyof ComparisonRow];
   const bv = key === "name" ? b.name : b[key as keyof ComparisonRow];
-  if (typeof av === "string" || typeof bv === "string" || key === "name" || key === "modality") {
+  if (
+    typeof av === "string" ||
+    typeof bv === "string" ||
+    key === "name" ||
+    key === "modality" ||
+    key === "license_display"
+  ) {
     const as = String(av ?? "");
     const bs = String(bv ?? "");
     return as.localeCompare(bs) * mul;
@@ -406,6 +531,7 @@ export function Dashboard({ data }: { data: ComparisonData }) {
         "usd_per_session_hour_gpu",
         "name",
         "modality",
+        "license_display",
       ]);
       setSortDir(ascDefault.has(key) ? "asc" : "desc");
     }
@@ -415,10 +541,12 @@ export function Dashboard({ data }: { data: ComparisonData }) {
     label,
     k,
     numeric,
+    sticky,
   }: {
     label: string;
     k: SortKey;
     numeric?: boolean;
+    sticky?: boolean;
   }) {
     const active = sortKey === k;
     const aria = active
@@ -429,7 +557,7 @@ export function Dashboard({ data }: { data: ComparisonData }) {
     return (
       <th
         scope="col"
-        className={`col-${String(k)} ${numeric ? "num" : ""}`}
+        className={`col-${String(k)} ${numeric ? "num" : ""} ${sticky ? "sticky-col" : ""}`}
         aria-sort={aria}
       >
         <button
@@ -624,15 +752,21 @@ export function Dashboard({ data }: { data: ComparisonData }) {
               </div>
             </div>
 
-            <div className="tbl-wrap" tabIndex={0} role="region" aria-labelledby="matrix-h">
+            {data.compliance_note && (
+              <p className="note-banner matrix-compliance-note" role="note">
+                {data.compliance_note}
+              </p>
+            )}
+
+            <MatrixScroller>
               <table className="tbl">
                 <caption className="sr-only">
                   Sortable talking-head model metrics. Column headers sort and open
-                  definitions above.
+                  definitions above. Model names stay fixed while scrolling sideways.
                 </caption>
                 <thead>
                   <tr>
-                    <SortTh label="Model" k="name" />
+                    <SortTh label="Model" k="name" sticky />
                     <SortTh label="Modality" k="modality" />
                     <SortTh label="RT factor" k="realtime_factor" numeric />
                     <SortTh label="Gen ms" k="gen_ms_avg" numeric />
@@ -645,12 +779,14 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                     <SortTh label="Lips" k="lip_sync" numeric />
                     <SortTh label="Identity" k="identity" numeric />
                     <SortTh label="Hosting" k="hosting_overall" numeric />
+                    <SortTh label="Langs" k="languages_sort" numeric />
+                    <SortTh label="License" k="license_display" />
                   </tr>
                 </thead>
                 <tbody>
                   {sortedRows.map((r) => (
                     <tr key={r.id}>
-                      <th scope="row">
+                      <th scope="row" className="sticky-col">
                         <a href={`#model-${r.id}`}>{r.name}</a>
                       </th>
                       <td>{(r.modality || "–").replace(/_/g, " ")}</td>
@@ -665,11 +801,27 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                       <td className="num">{fmtNum(r.lip_sync, 1)}</td>
                       <td className="num">{fmtNum(r.identity, 1)}</td>
                       <td className="num">{fmtNum(r.hosting_overall, 1)}</td>
+                      <td className="num" title={r.languages_notes || undefined}>
+                        {r.languages_display || "—"}
+                      </td>
+                      <td
+                        className={
+                          r.license_commercial_ok === false
+                            ? "license-cell license-nc"
+                            : "license-cell"
+                        }
+                        title={r.license_summary || undefined}
+                      >
+                        {r.license_display || "—"}
+                        {r.license_commercial_ok === false ? (
+                          <span className="license-flag"> NC</span>
+                        ) : null}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
+            </MatrixScroller>
           </section>
 
           <section id="charts" className="section" aria-labelledby="charts-h">
@@ -849,7 +1001,58 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                     <Metric label="Lip sync" value={fmtNum(d.lip_sync, 1)} hint="/10" />
                     <Metric label="Identity" value={fmtNum(d.identity, 1)} hint="/10" />
                     <Metric label="Hosting" value={fmtNum(d.hosting_overall, 1)} hint="/10" />
+                    <Metric
+                      label="Languages"
+                      value={
+                        d.languages_count != null
+                          ? String(d.languages_count)
+                          : d.languages_display || "—"
+                      }
+                    />
+                    <Metric
+                      label="License"
+                      value={d.license_display || "—"}
+                      hint={
+                        d.license_commercial_ok === false
+                          ? "non-commercial"
+                          : d.license_commercial_ok
+                            ? "commercial OK*"
+                            : undefined
+                      }
+                    />
                   </dl>
+
+                  {(d.languages_labels?.length ||
+                    d.languages_notes ||
+                    d.license_summary ||
+                    d.license_caveats?.length) ? (
+                    <div className="compliance-block">
+                      <div>
+                        <h4>Languages</h4>
+                        {d.languages_labels?.length ? (
+                          <ul className="lang-list">
+                            {d.languages_labels.map((l) => (
+                              <li key={l}>{l}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="compliance-empty">No closed language list from the vendor.</p>
+                        )}
+                        {d.languages_notes && <p>{d.languages_notes}</p>}
+                      </div>
+                      <div>
+                        <h4>License / free use</h4>
+                        {d.license_summary && <p>{d.license_summary}</p>}
+                        {d.license_caveats?.length ? (
+                          <ul>
+                            {d.license_caveats.map((c) => (
+                              <li key={c}>{c}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {(d.pros?.length || d.cons?.length) ? (
                     <div className="pros-cons">

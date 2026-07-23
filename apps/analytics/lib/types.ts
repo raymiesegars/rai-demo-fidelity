@@ -28,6 +28,17 @@ export type ComparisonRow = {
   identity?: number | null;
   hosting_overall?: number | null;
   manual_complete?: boolean;
+  languages_mode?: string;
+  languages_count?: number | null;
+  languages_sort?: number | null;
+  languages_display?: string;
+  languages_labels?: string[];
+  languages_notes?: string;
+  license_spdx?: string;
+  license_commercial_ok?: boolean | null;
+  license_summary?: string;
+  license_caveats?: string[];
+  license_display?: string;
 };
 
 export type ModelDetail = ComparisonRow & {
@@ -58,5 +69,6 @@ export type ComparisonData = {
   rows: ComparisonRow[];
   details?: ModelDetail[];
   hardware_note?: string;
+  compliance_note?: string;
   updated_at?: string;
 };

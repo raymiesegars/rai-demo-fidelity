@@ -64,9 +64,17 @@ export function exportSummaryCsv(data: ComparisonData) {
     "lip_sync",
     "identity",
     "hosting_overall",
+    "languages_display",
+    "languages_count",
+    "languages_labels",
+    "license_spdx",
+    "license_commercial_ok",
   ];
   const rows = data.rows.map((r) =>
-    headers.map((h) => (r as Record<string, unknown>)[h] ?? ""),
+    headers.map((h) => {
+      if (h === "languages_labels") return (r.languages_labels || []).join(" | ");
+      return (r as Record<string, unknown>)[h] ?? "";
+    }),
   );
   downloadCsv("avatar-model-summary.csv", headers, rows);
 }
@@ -96,6 +104,14 @@ export function exportDetailedCsv(data: ComparisonData) {
     "lip_sync",
     "identity",
     "hosting_overall",
+    "languages_display",
+    "languages_count",
+    "languages_labels",
+    "languages_notes",
+    "license_spdx",
+    "license_commercial_ok",
+    "license_summary",
+    "license_caveats",
     "verdict",
     "pros",
     "cons",
@@ -130,6 +146,14 @@ export function exportDetailedCsv(data: ComparisonData) {
     d.lip_sync ?? "",
     d.identity ?? "",
     d.hosting_overall ?? "",
+    d.languages_display ?? "",
+    d.languages_count ?? "",
+    (d.languages_labels || []).join(" | "),
+    d.languages_notes ?? "",
+    d.license_spdx ?? "",
+    d.license_commercial_ok ?? "",
+    d.license_summary ?? "",
+    (d.license_caveats || []).join(" | "),
     d.verdict ?? "",
     (d.pros || []).join(" | "),
     (d.cons || []).join(" | "),

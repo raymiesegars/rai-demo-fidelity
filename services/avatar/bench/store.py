@@ -226,9 +226,57 @@ def load_findings() -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def load_compliance() -> dict:
+    p = BENCH / "compliance.json"
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _languages_fields(comp: dict) -> dict:
+    """Flatten language research for matrix + reviews."""
+    lang = dict((comp or {}).get("languages") or {})
+    mode = lang.get("mode") or "unlisted"
+    count = lang.get("count")
+    labels = list(lang.get("labels") or [])
+    # Sort key: listed count; any_claimed high; audio_driven mid; unlisted low.
+    if mode == "listed" and count is not None:
+        sort_key = float(count)
+        display = str(int(count)) if float(count) == int(count) else str(count)
+    elif mode == "any_claimed":
+        sort_key = 1000.0
+        display = "Any*"
+    elif mode == "audio_driven":
+        sort_key = 500.0
+        display = "Audio*"
+    else:
+        sort_key = -1.0
+        display = "—"
+    return {
+        "languages_mode": mode,
+        "languages_count": count,
+        "languages_sort": sort_key,
+        "languages_display": display,
+        "languages_labels": labels,
+        "languages_notes": lang.get("notes") or "",
+    }
+
+
+def _license_fields(comp: dict) -> dict:
+    lic = dict((comp or {}).get("license") or {})
+    return {
+        "license_spdx": lic.get("spdx") or "",
+        "license_commercial_ok": lic.get("commercial_ok"),
+        "license_summary": lic.get("summary") or "",
+        "license_caveats": list(lic.get("caveats") or []),
+        "license_display": lic.get("spdx") or "—",
+    }
+
+
 def comparison_matrix() -> dict:
     """Flat matrix for charts + rich per-model details for the public report."""
     findings = load_findings()
+    compliance = load_compliance()
     rows = []
     details = []
     for item in list_results():
@@ -251,6 +299,9 @@ def comparison_matrix() -> dict:
         host = (r.get("manual") or {}).get("hosting") or {}
         hw = dict(r.get("hardware") or {})
         find = findings.get(m["id"]) or {}
+        comp = compliance.get(m["id"]) or {}
+        lang_f = _languages_fields(comp)
+        lic_f = _license_fields(comp)
         row = {
             "id": m["id"],
             "name": m["name"],
@@ -273,6 +324,8 @@ def comparison_matrix() -> dict:
             "identity": fid.get("identity"),
             "hosting_overall": host.get("overall"),
             "manual_complete": fid.get("overall") is not None,
+            **lang_f,
+            **lic_f,
         }
         rows.append(row)
         details.append({
@@ -309,5 +362,12 @@ def comparison_matrix() -> dict:
         "rows": rows,
         "details": details,
         "hardware_note": "Primary harness: RTX 4090-class GPU, Windows, torch.compile off unless noted.",
+        "compliance_note": (
+            "Languages: listed = count of languages named in official docs; "
+            "Any* = vendor claims language-agnostic / any language; "
+            "Audio* = audio-driven with no closed language list; "
+            "— = no official pack (often English-centric audio encoder). "
+            "Licenses summarized from upstream README/LICENSE — not legal advice."
+        ),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }

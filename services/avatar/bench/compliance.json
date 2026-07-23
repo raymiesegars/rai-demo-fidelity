@@ -1,0 +1,173 @@
+{
+  "wav2lip": {
+    "languages": {
+      "mode": "any_claimed",
+      "count": null,
+      "labels": ["Any spoken language (official claim)"],
+      "notes": "Rudrabha/Wav2Lip README: works for any identity, voice, and language. Audio-driven — not a finite language pack."
+    },
+    "license": {
+      "spdx": "Non-commercial (custom)",
+      "commercial_ok": false,
+      "summary": "Open code/weights restricted to personal, academic, or non-commercial use (trained on LRS2).",
+      "caveats": [
+        "Commercial use of the open models is strictly prohibited without a separate commercial arrangement (Sync Labs / authors).",
+        "Do not treat community forks’ MIT/Apache claims as covering the original Rudrabha/Wav2Lip weights."
+      ]
+    }
+  },
+  "musetalk": {
+    "languages": {
+      "mode": "listed",
+      "count": 3,
+      "labels": ["English", "Chinese", "Japanese"],
+      "notes": "Official MuseTalk README lists audio support for Chinese, English, and Japanese."
+    },
+    "license": {
+      "spdx": "MIT",
+      "commercial_ok": true,
+      "summary": "Code and trained MuseTalk models are MIT / free for academic and commercial use per project disclaimer.",
+      "caveats": [
+        "Third-party deps (e.g. Whisper, DWPose, VAE) keep their own licenses — comply with those as well.",
+        "Sample test data in the repo is for non-commercial research only."
+      ]
+    }
+  },
+  "sadtalker": {
+    "languages": {
+      "mode": "audio_driven",
+      "count": null,
+      "labels": [],
+      "notes": "Audio→3DMM pipeline; no closed language list published. Lip motion follows the input audio track; multilingual speech is commonly used in demos but not enumerated by the authors."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "Apache-2.0 (non-commercial restriction removed). Attribution and Apache terms still apply.",
+      "caveats": [
+        "Third-party components (GFPGAN/basicsr/etc.) may add their own terms.",
+        "Tencent trademark/name restrictions in the project disclaimer still apply.",
+        "Bundled Wav2Lip checkpoint inherits Wav2Lip’s non-commercial terms if you use that path."
+      ]
+    }
+  },
+  "sonic": {
+    "languages": {
+      "mode": "audio_driven",
+      "count": null,
+      "labels": [],
+      "notes": "Portrait + audio img2vid; no official closed language list. Quality depends on the input audio, not a language pack."
+    },
+    "license": {
+      "spdx": "CC-BY-NC-SA-4.0",
+      "commercial_ok": false,
+      "summary": "Creative Commons BY-NC-SA 4.0 — non-commercial; ShareAlike on adaptations.",
+      "caveats": [
+        "Authors explicitly point commercial users to Tencent Cloud VCLM instead of this open release.",
+        "ShareAlike can complicate proprietary product packaging."
+      ]
+    }
+  },
+  "liveportrait": {
+    "languages": {
+      "mode": "listed",
+      "count": 2,
+      "labels": ["English", "Chinese"],
+      "notes": "LivePortrait itself is a general motion/warp stack. Our bench path uses JoyVASA for audio→motion; JoyVASA documents training on private Chinese + public English data (multilingual claim centered on those)."
+    },
+    "license": {
+      "spdx": "MIT",
+      "commercial_ok": true,
+      "summary": "LivePortrait (KwaiVGI) and JoyVASA are MIT-licensed for code; permissive for commercial use with attribution.",
+      "caveats": [
+        "Confirm licenses for every checkpoint you download (InsightFace / detection weights may differ).",
+        "MIT still requires retaining copyright notices."
+      ]
+    }
+  },
+  "livetalk": {
+    "languages": {
+      "mode": "unlisted",
+      "count": null,
+      "labels": [],
+      "notes": "GAIR-NLP/LiveTalk publishes no official language pack. Audio path uses facebook/wav2vec2-base-960h (English ASR-pretrained); cross-lingual speech is not a documented guarantee."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "Project README states Apache-2.0 release (GitHub license metadata may show NOASSERTION — verify LICENSE file in your clone).",
+      "caveats": [
+        "Depends on Wan2.1 / OmniAvatar stacks — verify those component licenses for your deployment.",
+        "Apache-2.0 requires NOTICE/attribution compliance."
+      ]
+    }
+  },
+  "echomimic": {
+    "languages": {
+      "mode": "listed",
+      "count": 2,
+      "labels": ["Chinese", "English"],
+      "notes": "EchoMimicV3 project page shows Chinese- and English-driven audio demos. Flash path uses chinese-wav2vec2-base; preview path uses wav2vec2-base-960h. Not marketed as a larger closed multilingual pack beyond these."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "EchoMimicV3 models are Apache-2.0; authors claim no rights over your generated content subject to license + law.",
+      "caveats": [
+        "Base Wan2.1-Fun weights and other deps keep their own terms.",
+        "Responsible-use / prohibited-content clauses in the project license still apply."
+      ]
+    }
+  },
+  "ditto": {
+    "languages": {
+      "mode": "audio_driven",
+      "count": null,
+      "labels": [],
+      "notes": "Audio-driven (HuBERT). No official closed language list from Ant Group README."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "Repository released under Apache-2.0.",
+      "caveats": [
+        "TensorRT / ONNX auxiliary models may carry additional terms — check checkpoint cards.",
+        "Apache-2.0 attribution required."
+      ]
+    }
+  },
+  "flashhead": {
+    "languages": {
+      "mode": "unlisted",
+      "count": null,
+      "labels": [],
+      "notes": "No official language pack. Streaming audio encoder is facebook/wav2vec2-base-960h (English-pretrained). Cross-lingual audio may work in practice but is not a documented guarantee."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "SoulX-FlashHead code is Apache-2.0; maintainers confirmed commercial use is allowed if you follow applicable law and license terms.",
+      "caveats": [
+        "Retain Apache notices; do not imply SoulApp/Soul-AILab endorsement.",
+        "Authors disclaim legal responsibility for downstream misuse; comply with local law (including China if applicable to your use)."
+      ]
+    }
+  },
+  "flashhead-pro": {
+    "languages": {
+      "mode": "unlisted",
+      "count": null,
+      "labels": [],
+      "notes": "Same family as Lite: no official language pack; uses the same wav2vec2-base-960h audio encoder stack."
+    },
+    "license": {
+      "spdx": "Apache-2.0",
+      "commercial_ok": true,
+      "summary": "Same SoulX-FlashHead Apache-2.0 release as Lite (Model_Pro weights in the same HF package).",
+      "caveats": [
+        "Same attribution and lawful-use requirements as Lite.",
+        "Heavier Wan VAE path — still under the project Apache-2.0 terms."
+      ]
+    }
+  }
+}
