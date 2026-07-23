@@ -1,0 +1,60 @@
+{
+  "model_id": "flashhead",
+  "updated_at": "2026-07-23T17:51:47Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "video_generation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio",
+      "idle_audio_drive"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": 10000,
+    "chunk_frames": 24,
+    "chunk_seconds": 0.96,
+    "gen_ms_avg": 472,
+    "realtime_factor": 2.03,
+    "busy_ratio": 0.492,
+    "sessions_per_gpu": 1.728,
+    "vram_used_gb": 7.92,
+    "ttfw_ms_avg": 3000,
+    "first_audio_ms_avg": 1141,
+    "video_pipeline_ms_avg": 1200,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 0.255,
+    "notes": "Measured locally; LLM+TTS dominate TTFW. Model-only gen is gen_ms / chunk_seconds.",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 1.728 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 8,
+      "skin_teeth": null,
+      "lip_sync": 9,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 7,
+      "uncanny_valley": 7,
+      "overall": 7,
+      "notes": "Solid continuous idle and speech. Occasional uncanny moments; overall strong for conversational use."
+    },
+    "hosting": {
+      "self_host": 9,
+      "windows_ok": 8,
+      "deps_fragility": 6,
+      "license_ok": 8,
+      "ops_ease": 7,
+      "overall": 8,
+      "notes": "Vendored + HF weights; Windows needs xfuser stub / no triton."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

@@ -1,0 +1,59 @@
+{
+  "model_id": "musetalk",
+  "updated_at": "2026-07-23T17:51:47Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "image_animation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 3106,
+    "realtime_factor": 0.95,
+    "busy_ratio": 1.053,
+    "sessions_per_gpu": 0.807,
+    "vram_used_gb": 1.6,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": 1085,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 0.545,
+    "notes": "",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 0.807 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 6,
+      "skin_teeth": null,
+      "lip_sync": 4,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 4,
+      "uncanny_valley": 5,
+      "overall": 4,
+      "notes": "Mouth region quality below product bar despite near-realtime speed."
+    },
+    "hosting": {
+      "self_host": 8,
+      "windows_ok": 4,
+      "deps_fragility": 3,
+      "license_ok": 8,
+      "ops_ease": 4,
+      "overall": 5,
+      "notes": "Separate venv; mmpose/mmcv fragile on Windows; VRAM-sensitive."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

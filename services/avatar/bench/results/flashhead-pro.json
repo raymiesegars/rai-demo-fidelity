@@ -1,0 +1,60 @@
+{
+  "model_id": "flashhead-pro",
+  "updated_at": "2026-07-23T20:40:00Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "video_generation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio",
+      "idle_audio_drive"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": 14000,
+    "chunk_frames": 28,
+    "chunk_seconds": 1.12,
+    "gen_ms_avg": 5506,
+    "realtime_factor": 0.2,
+    "busy_ratio": 4.916,
+    "sessions_per_gpu": 0.173,
+    "vram_used_gb": 9.57,
+    "ttfw_ms_avg": 18500,
+    "first_audio_ms_avg": 1129,
+    "video_pipeline_ms_avg": 16200,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 2.543,
+    "notes": "Single-4090 Pro path; idle and speech both far below realtime. Must buffer full replies to avoid freezes.",
+    "cost_notes": "$/sess-hr = $0.44/hr ÷ 0.173 eff. sessions (0.85/busy_ratio)."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 4,
+      "skin_teeth": 3,
+      "lip_sync": 4,
+      "blinks_idle": 2,
+      "head_motion": 3,
+      "composite_stability": 3,
+      "uncanny_valley": 3,
+      "overall": 3,
+      "notes": "Detail spikes briefly then collapses into freezes; idle unusable; composite seams obvious under load."
+    },
+    "hosting": {
+      "self_host": 5,
+      "windows_ok": 5,
+      "deps_fragility": 4,
+      "license_ok": 8,
+      "ops_ease": 3,
+      "overall": 4,
+      "notes": "Same Lite stack but Model_Pro + Wan VAE; VRAM and restart cost higher; not chat-viable on one 4090."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

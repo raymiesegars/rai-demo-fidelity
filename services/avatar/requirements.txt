@@ -1,0 +1,27 @@
+# PyTorch installed separately: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+opencv-python>=4.10
+diffusers>=0.34.0
+transformers==4.57.3
+tokenizers>=0.20.3
+accelerate>=1.8.1
+einops
+loguru
+librosa
+soundfile
+imageio
+imageio-ffmpeg
+huggingface_hub
+easydict
+ftfy
+scikit-image
+pyloudnorm
+mediapipe==0.10.9
+safetensors
+pyyaml
+# Server
+fastapi
+uvicorn[standard]
+httpx
+python-multipart
+websockets
+edge-tts

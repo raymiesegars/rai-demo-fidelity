@@ -1,0 +1,168 @@
+{
+  "categories": [
+    {
+      "id": "modality",
+      "label": "Image animation vs video generation",
+      "description": "image_animation = drive/edit a still via lipsync, warp, or 3DMM paste (source pixels largely preserved). video_generation = synthesize new frame pixels with a generative model (diffusion/flow), usually still image-conditioned — not text-to-video from scratch. Sonic is the latter (SVD img2vid).",
+      "automated": false,
+      "score_scale": "categorical"
+    },
+    {
+      "id": "fidelity",
+      "label": "Visual fidelity / natural vs uncanny",
+      "description": "Manual score after watching the same clip set. Identity, skin, teeth, blinks, head motion, composite seams, and uncanny valley feel.",
+      "automated": false,
+      "score_scale": "1-10"
+    },
+    {
+      "id": "concurrency",
+      "label": "Concurrency / scalability",
+      "description": "Effective concurrent sessions per GPU = 0.85/busy_ratio (fractional), capped by VRAM. Values below 1 mean the model is slower than realtime.",
+      "automated": true,
+      "score_scale": "sessions_per_gpu"
+    },
+    {
+      "id": "latency",
+      "label": "Latency & conversation speed",
+      "description": "Time to first spoken frame, chunk gen time, realtime factor. Isolated from LiveKit/LLM where possible.",
+      "automated": true,
+      "score_scale": "ms"
+    },
+    {
+      "id": "hosting",
+      "label": "Hosting & server flexibility",
+      "description": "Curated ops score (not UI-editable): self-host, Windows, deps fragility, license, day-2 restart pain. High = drop-in; low = heavy/fragile/restricted.",
+      "automated": false,
+      "score_scale": "1-10"
+    },
+    {
+      "id": "cost",
+      "label": "Cost",
+      "description": "GPU $/session-hour = $0.44 ÷ effective sessions/GPU. Effective sessions = 0.85/busy_ratio (fractional; <1 if slower than realtime), also capped by VRAM. Not floored to 1.",
+      "automated": true,
+      "score_scale": "usd_per_session_hour"
+    }
+  ],
+  "models": [
+    {
+      "id": "wav2lip",
+      "name": "Wav2Lip",
+      "family": "lipsync",
+      "modality": "image_animation",
+      "output": "face_region",
+      "needs_composite": true,
+      "realtime_claim": "near-realtime with daemon",
+      "repo": "https://github.com/Rudrabha/Wav2Lip",
+      "notes": "Classic lip-sync on face crop; no idle motion (static between utterances). Must paste into locked face rect. Shoulders/body stay static.",
+      "status": "ready"
+    },
+    {
+      "id": "musetalk",
+      "name": "MuseTalk",
+      "family": "lipsync",
+      "modality": "image_animation",
+      "output": "face_region",
+      "needs_composite": true,
+      "realtime_claim": "realtime-capable (1.5)",
+      "repo": "https://github.com/TMElyralab/MuseTalk",
+      "notes": "Latent lipsync on a face crop, blended back onto the still. Use locked composite / full-frame blend.",
+      "status": "ready"
+    },
+    {
+      "id": "sadtalker",
+      "name": "SadTalker",
+      "family": "portrait_animation",
+      "modality": "image_animation",
+      "output": "head_crop",
+      "needs_composite": true,
+      "realtime_claim": "offline / slow",
+      "repo": "https://github.com/OpenTalker/SadTalker",
+      "notes": "Audio→3DMM coeffs→neural face render, then paste onto still (full/still mode). Offline fidelity baseline, not conversation-realtime.",
+      "status": "ready"
+    },
+    {
+      "id": "sonic",
+      "name": "Sonic",
+      "family": "diffusion_img2vid",
+      "modality": "video_generation",
+      "output": "portrait",
+      "needs_composite": true,
+      "realtime_claim": "offline (minutes/utterance)",
+      "repo": "https://github.com/jixiaozhong/Sonic",
+      "notes": "CVPR 2025 audio-driven portrait via Stable Video Diffusion (img2vid) — generative video frames conditioned on a still + audio, not lipsync paste. High fidelity, not sub-3s. CC BY-NC-SA (non-commercial).",
+      "status": "ready"
+    },
+    {
+      "id": "liveportrait",
+      "name": "LivePortrait",
+      "family": "warp",
+      "modality": "image_animation",
+      "output": "portrait",
+      "needs_composite": true,
+      "realtime_claim": "near-realtime (ONNX + JoyVASA)",
+      "repo": "https://github.com/KwaiVGI/LivePortrait",
+      "notes": "FasterLivePortrait ONNX warp + JoyVASA audio→motion. Identity-stable pasteback onto still. MIT.",
+      "status": "ready"
+    },
+    {
+      "id": "livetalk",
+      "name": "LiveTalk",
+      "family": "generative_stream",
+      "modality": "video_generation",
+      "output": "portrait",
+      "needs_composite": false,
+      "realtime_claim": "~25 FPS / 0.33s TTFW (paper; Linux)",
+      "repo": "https://github.com/GAIR-NLP/LiveTalk",
+      "notes": "Distilled causal Wan 1.3B (4-step). FlashHead-class realtime candidate. Official Linux+flash-attn; Windows SDPA best-effort. Public code is clip infer (not WebRTC stream).",
+      "status": "reviewed"
+    },
+    {
+      "id": "echomimic",
+      "name": "EchoMimicV3-Flash",
+      "family": "generative_clip",
+      "modality": "video_generation",
+      "output": "portrait",
+      "needs_composite": false,
+      "realtime_claim": "8-step flash-pro (offline / near-interactive)",
+      "repo": "https://github.com/antgroup/echomimic_v3",
+      "notes": "1.3B Wan-Fun audio-driven animation. Stronger motion/look than Lite FlashHead; utterance clips, not infinite stream. Apache-2.0.",
+      "status": "reviewed"
+    },
+    {
+      "id": "ditto",
+      "name": "Ditto",
+      "family": "diffusion_motion",
+      "modality": "video_generation",
+      "output": "portrait",
+      "needs_composite": true,
+      "realtime_claim": "realtime (TRT)",
+      "repo": "https://github.com/antgroup/ditto-talkinghead",
+      "notes": "Motion-space diffusion synthesizing talking-head frames from a still. Open path is clip/PyTorch; paper realtime needs TensorRT.",
+      "status": "reviewed"
+    },
+    {
+      "id": "flashhead",
+      "name": "SoulX-FlashHead Lite",
+      "family": "generative_stream",
+      "modality": "video_generation",
+      "output": "face_512_or_composite",
+      "needs_composite": true,
+      "realtime_claim": "~2.3× realtime on 4090 (Lite)",
+      "repo": "https://github.com/Soul-AILab/SoulX-FlashHead",
+      "notes": "Continuous generative talking-head stream (not clip-offline). Full-image mode = static bg + locked face overlay. Best speed/quality tradeoff for chat.",
+      "status": "active"
+    },
+    {
+      "id": "flashhead-pro",
+      "name": "SoulX-FlashHead Pro",
+      "family": "generative_stream",
+      "modality": "video_generation",
+      "output": "face_512_or_composite",
+      "needs_composite": true,
+      "realtime_claim": "~11 FPS on 4090 (Pro)",
+      "repo": "https://github.com/Soul-AILab/SoulX-FlashHead",
+      "notes": "Same continuous stream stack as Lite; Wan VAE + Model_Pro. Higher detail, not conversation-realtime on one 4090. Setup: .\\setup_flashhead_pro.ps1",
+      "status": "reviewed"
+    }
+  ]
+}

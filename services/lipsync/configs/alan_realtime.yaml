@@ -1,6 +1,0 @@
-alan:
-  preparation: true   # set false after first successful prepare
-  bbox_shift: 5
-  video_path: "../../assets/alan-loop.mp4"
-  audio_clips:
-    sample: "../../assets/sample.wav"

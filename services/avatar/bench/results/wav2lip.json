@@ -1,0 +1,59 @@
+{
+  "model_id": "wav2lip",
+  "updated_at": "2026-07-23T17:51:47Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "image_animation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 466,
+    "realtime_factor": 7.26,
+    "busy_ratio": 0.138,
+    "sessions_per_gpu": 5.6,
+    "vram_used_gb": 4.14,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": 1186,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 0.079,
+    "notes": "",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 5.6 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 1,
+      "skin_teeth": null,
+      "lip_sync": 2,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 1,
+      "uncanny_valley": 1,
+      "overall": 2,
+      "notes": "Mouth region poorly aligned with identity; no idle motion between utterances. Fast but below visual quality bar."
+    },
+    "hosting": {
+      "self_host": 9,
+      "windows_ok": 9,
+      "deps_fragility": 8,
+      "license_ok": 9,
+      "ops_ease": 8,
+      "overall": 8,
+      "notes": "Small classic stack; face crop + composite. Easy Windows self-host."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

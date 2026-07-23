@@ -1,0 +1,59 @@
+{
+  "model_id": "liveportrait",
+  "updated_at": "2026-07-23",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "image_animation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 38248,
+    "realtime_factor": 0.13,
+    "busy_ratio": 7.476,
+    "sessions_per_gpu": 0.114,
+    "vram_used_gb": 1.6,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": 1847,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 3.86,
+    "notes": "",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 0.114 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 1,
+      "skin_teeth": null,
+      "lip_sync": 1,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 1,
+      "uncanny_valley": 1,
+      "overall": 1,
+      "notes": "Multiple ONNX/JoyVASA configurations reviewed; output remained unusable for the target portrait and render times stayed far below realtime."
+    },
+    "hosting": {
+      "self_host": 8,
+      "windows_ok": 6,
+      "deps_fragility": 5,
+      "license_ok": 8,
+      "ops_ease": 5,
+      "overall": 6,
+      "notes": "FasterLivePortrait ONNX + JoyVASA + HuBERT; MIT; onnxruntime CUDA pins; multi-GB downloads."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

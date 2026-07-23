@@ -1,0 +1,50 @@
+{
+  "id": "standard_bench_v1",
+  "name": "Standard 10-turn intake bench",
+  "description": "Fixed clinician prompts for every model. Same portrait (Jordan Blake), Full image framing. After all 10 turns finish, capture automated stats then enter manual fidelity scores.",
+  "framing": 1.0,
+  "portrait": "assets/jordan-blake-still.png",
+  "wait_after_last_s": 2.0,
+  "turns": [
+    {
+      "id": 1,
+      "text": "Hi Alan, thanks for coming in. How are you feeling today?"
+    },
+    {
+      "id": 2,
+      "text": "Can you tell me where exactly the pain is located?"
+    },
+    {
+      "id": 3,
+      "text": "How long has this been going on?"
+    },
+    {
+      "id": 4,
+      "text": "On a scale from one to ten, how bad is the pain right now?"
+    },
+    {
+      "id": 5,
+      "text": "Does anything make it worse, like bending or lifting?"
+    },
+    {
+      "id": 6,
+      "text": "Have you tried any treatments or medication so far?"
+    },
+    {
+      "id": 7,
+      "text": "Does the pain wake you up at night?"
+    },
+    {
+      "id": 8,
+      "text": "Any numbness, tingling, or weakness in your legs?"
+    },
+    {
+      "id": 9,
+      "text": "Okay. In your own words, what are you hoping to get out of today's visit?"
+    },
+    {
+      "id": 10,
+      "text": "Thanks Alan. Before we wrap up, is there anything else you want me to know?"
+    }
+  ]
+}

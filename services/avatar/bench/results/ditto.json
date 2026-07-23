@@ -1,0 +1,60 @@
+{
+  "model_id": "ditto",
+  "updated_at": "2026-07-23T20:40:00Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "video_generation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite",
+    "notes": "Motion-space diffusion synthesizing frames from a still"
+  },
+  "automated": {
+    "prep_ms": 18000,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 11000,
+    "realtime_factor": 0.04,
+    "busy_ratio": 22.9,
+    "sessions_per_gpu": 0.037,
+    "vram_used_gb": 8.1,
+    "ttfw_ms_avg": 32000,
+    "first_audio_ms_avg": 1175,
+    "video_pipeline_ms_avg": 29000,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 11.89,
+    "notes": "PyTorch/Windows path; paper realtime needs TensorRT which did not land cleanly here.",
+    "cost_notes": "$/sess-hr = $0.44/hr ÷ 0.037 eff. sessions."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 4,
+      "skin_teeth": 3,
+      "lip_sync": 3,
+      "blinks_idle": 2,
+      "head_motion": 3,
+      "composite_stability": 4,
+      "uncanny_valley": 3,
+      "overall": 3,
+      "notes": "Still frames can look fine; lips and timing fall apart under dialogue; no live idle stream."
+    },
+    "hosting": {
+      "self_host": 4,
+      "windows_ok": 2,
+      "deps_fragility": 2,
+      "license_ok": 7,
+      "ops_ease": 2,
+      "overall": 3,
+      "notes": "TRT path painful on Windows; open PyTorch clip path too slow for product chat."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

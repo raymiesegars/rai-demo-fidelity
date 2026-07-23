@@ -1,6 +1,9 @@
-# Dependencies
+# Dependencies / environments
 node_modules/
 .venv/
+.venv_*/
+services/avatar/.venv_ditto/
+services/avatar/.venv_musetalk/
 __pycache__/
 *.py[cod]
 
@@ -9,10 +12,23 @@ __pycache__/
 .env.local
 .env*.local
 !.env.example
-
-# SSH keys (never commit)
+!**/.env.example
 id_ed25519
 id_ed25519.pub
+
+# Nested / legacy clutter
+rai-demo-fidelity/
+alan-loop.mp4
+
+# Avatar service — vendored repo, weights, runtime artifacts
+services/avatar/vendor/
+services/avatar/models/
+services/avatar/uploads/
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.trt
 
 # Build / cache
 .next/
@@ -21,28 +37,11 @@ dist/
 *.egg-info/
 .pytest_cache/
 
-# OS
+# OS / IDE
 .DS_Store
 Thumbs.db
-
-# IDE
 .idea/
 .vscode/
-
-# Model weights (RunPod)
-checkpoints/
-*.onnx
-*.trt
-
-# Local lipsync (MuseTalk) — vendored repo, weights, ffmpeg, large assets
-services/lipsync/vendor/
-services/lipsync/models/
-services/lipsync/tools/
-services/lipsync/assets/*.mp4
-services/lipsync/results/
-*.pth
-*.bin
-*.safetensors
 
 # Logs
 *.log

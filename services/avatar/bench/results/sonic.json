@@ -1,0 +1,60 @@
+{
+  "model_id": "sonic",
+  "updated_at": "2026-07-23T17:51:47Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "video_generation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite",
+    "notes": "SVD img2vid (audio-conditioned generative frames), not lipsync paste"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 59154,
+    "realtime_factor": 0.07,
+    "busy_ratio": 15.215,
+    "sessions_per_gpu": 0.056,
+    "vram_used_gb": 5.26,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": 1246,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 7.857,
+    "notes": "",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 0.056 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 10,
+      "skin_teeth": null,
+      "lip_sync": 9,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 8,
+      "uncanny_valley": 9,
+      "overall": 10,
+      "notes": "Highest visual fidelity in the set; utterance render times remain minutes-class on a 4090."
+    },
+    "hosting": {
+      "self_host": 7,
+      "windows_ok": 6,
+      "deps_fragility": 4,
+      "license_ok": 2,
+      "ops_ease": 3,
+      "overall": 3,
+      "notes": "Huge SVD stack; CC BY-NC-SA; minutes/utt; wants 24\u201332GB GPU."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

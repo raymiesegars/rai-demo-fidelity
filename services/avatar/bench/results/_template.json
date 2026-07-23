@@ -1,0 +1,56 @@
+{
+  "model_id": "REPLACE_ME",
+  "updated_at": null,
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 24,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "image_animation",
+    "input": "still_image",
+    "drives": ["speech_audio"],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": null,
+    "chunk_seconds": null,
+    "gen_ms_avg": null,
+    "realtime_factor": null,
+    "busy_ratio": null,
+    "sessions_per_gpu": null,
+    "vram_used_gb": null,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": null,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": null,
+    "notes": ""
+  },
+  "manual": {
+    "fidelity": {
+      "identity": null,
+      "skin_teeth": null,
+      "lip_sync": null,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": null,
+      "uncanny_valley": null,
+      "overall": null,
+      "notes": ""
+    },
+    "hosting": {
+      "self_host": null,
+      "windows_ok": null,
+      "deps_fragility": null,
+      "license_ok": null,
+      "ops_ease": null,
+      "overall": null,
+      "notes": ""
+    }
+  },
+  "clips": [],
+  "status": "empty"
+}

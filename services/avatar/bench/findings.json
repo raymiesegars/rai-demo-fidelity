@@ -1,0 +1,129 @@
+{
+  "flashhead": {
+    "verdict": "Best overall for conversational talking-head on a single RTX 4090 in this bench.",
+    "pros": [
+      "Continuous idle + speech in one stream (~2× realtime on 4090)",
+      "Strong lip sync and stable identity in full-image composite",
+      "Lowest GPU $/session-hour among generative peers tested",
+      "Self-hostable on Windows with a manageable weight download"
+    ],
+    "cons": [
+      "Occasional uncanny moments in idle/expression",
+      "Windows needs compatibility stubs (no Triton / xfuser)",
+      "Composite still required for full-frame portrait lock"
+    ]
+  },
+  "flashhead-pro": {
+    "verdict": "Not viable for live chat on one 4090; detail does not offset freezes and cost.",
+    "pros": [
+      "Same API surface as Lite; easy A/B",
+      "Brief moments of higher facial detail when a chunk completes"
+    ],
+    "cons": [
+      "~0.2× realtime (~5.5 s gen per ~1.1 s video) — constant underruns",
+      "Idle generative motion unusable without multi-second freezes",
+      "Higher VRAM and heavier Wan VAE path than Lite",
+      "Must buffer full replies to play smoothly, killing conversational latency"
+    ]
+  },
+  "wav2lip": {
+    "verdict": "Fast and cheap, but visual quality is far below product bar for this portrait.",
+    "pros": [
+      "Very high realtime factor and concurrency on 4090",
+      "Small stack; easy Windows self-host",
+      "Lowest GPU cost in the matrix"
+    ],
+    "cons": [
+      "Mouth region poorly matches identity; uncanny and misaligned",
+      "No idle motion (static between utterances)",
+      "Requires locked face composite; shoulders stay frozen"
+    ]
+  },
+  "musetalk": {
+    "verdict": "Near-realtime but mouth quality and Windows ops hold it back.",
+    "pros": [
+      "Roughly realtime on this harness",
+      "Latent lipsync with composite back onto the still",
+      "Moderate cost vs slower generative peers"
+    ],
+    "cons": [
+      "Mouth appearance scored poorly in manual review",
+      "Separate venv; mmpose/mmcv fragile on Windows",
+      "VRAM-sensitive; no continuous idle stream"
+    ]
+  },
+  "sadtalker": {
+    "verdict": "Useful as an offline baseline only — too blurry and slow for chat.",
+    "pros": [
+      "Established 3DMM portrait pipeline",
+      "Lip sync acceptable relative to its resolution",
+      "Uncanny score better than warp/lipsync failures in this set"
+    ],
+    "cons": [
+      "Blurry / low-resolution output",
+      "Offline clip path; not conversation-realtime",
+      "Own venv and dependency patches on Windows"
+    ]
+  },
+  "sonic": {
+    "verdict": "Highest visual fidelity in the set; far too slow and license-restricted for chat.",
+    "pros": [
+      "Top manual fidelity / identity / lip scores",
+      "Generative SVD img2vid quality stands out",
+      "Strong composite when used with locked framing"
+    ],
+    "cons": [
+      "Minutes-class latency per utterance (~0.07× realtime)",
+      "CC BY-NC-SA (non-commercial)",
+      "Huge stack and VRAM appetite; poor concurrency and $/sess-hr"
+    ]
+  },
+  "liveportrait": {
+    "verdict": "Did not meet visual or latency bar in this Windows ONNX + JoyVASA setup.",
+    "pros": [
+      "MIT license; documented FasterLivePortrait path",
+      "Hosting/ops score middling (installable, not impossible)"
+    ],
+    "cons": [
+      "Manual fidelity scored at floor after multiple configs",
+      "Extremely slow render in this harness",
+      "Warp/composite result looked unusable for the target portrait"
+    ]
+  },
+  "livetalk": {
+    "verdict": "Paper realtime does not translate to this Windows path; not chat-ready here.",
+    "pros": [
+      "Interesting distilled Wan architecture on paper",
+      "Apache-2.0"
+    ],
+    "cons": [
+      "Windows SDPA path far slower than Linux+flash-attn claims",
+      "Clip infer only — no continuous idle",
+      "Identity drift between clips; heavy VRAM and fragile install"
+    ]
+  },
+  "echomimic": {
+    "verdict": "Offline-class clip model; motion quality cannot save conversation latency.",
+    "pros": [
+      "Rich motion in isolated clips",
+      "Apache-2.0; documented flash-pro path"
+    ],
+    "cons": [
+      "~0.01× realtime; warm load alone is minutes",
+      "No continuous idle stream",
+      "Worst GPU $/session-hour in this matrix"
+    ]
+  },
+  "ditto": {
+    "verdict": "Open PyTorch path is too slow; TensorRT realtime did not land cleanly on Windows.",
+    "pros": [
+      "Still frames can look fine in isolation",
+      "Composite path available for full-image framing"
+    ],
+    "cons": [
+      "Dialogue timing and lips fall apart under load",
+      "No live idle stream on the open path",
+      "TRT dependency for claimed realtime; fragile Windows ops"
+    ]
+  }
+}

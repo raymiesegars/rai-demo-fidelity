@@ -1,0 +1,59 @@
+{
+  "model_id": "sadtalker",
+  "updated_at": "2026-07-23T17:51:47Z",
+  "hardware": {
+    "gpu": "RTX 4090",
+    "vram_gb": 25.76,
+    "os": "Windows",
+    "torch_compile": false
+  },
+  "modality": {
+    "class": "image_animation",
+    "input": "still_image",
+    "drives": [
+      "speech_audio"
+    ],
+    "preserves_background": "via_composite"
+  },
+  "automated": {
+    "prep_ms": null,
+    "chunk_frames": 12,
+    "chunk_seconds": 0.48,
+    "gen_ms_avg": 7422,
+    "realtime_factor": 0.39,
+    "busy_ratio": 2.578,
+    "sessions_per_gpu": 0.33,
+    "vram_used_gb": 1.6,
+    "ttfw_ms_avg": null,
+    "first_audio_ms_avg": 1189,
+    "video_pipeline_ms_avg": null,
+    "gpu_usd_per_hr": 0.44,
+    "usd_per_session_hour_gpu": 1.333,
+    "notes": "",
+    "cost_notes": "$/sess-hr = $0.44/hr \u00f7 0.33 eff. sessions (0.85/busy_ratio, capped by VRAM). <1 session means slower-than-realtime."
+  },
+  "manual": {
+    "fidelity": {
+      "identity": 5,
+      "skin_teeth": null,
+      "lip_sync": 6,
+      "blinks_idle": null,
+      "head_motion": null,
+      "composite_stability": 3,
+      "uncanny_valley": 8,
+      "overall": 3,
+      "notes": "Blurry, low-resolution output; offline clip path only — too slow for conversation."
+    },
+    "hosting": {
+      "self_host": 8,
+      "windows_ok": 5,
+      "deps_fragility": 4,
+      "license_ok": 8,
+      "ops_ease": 5,
+      "overall": 5,
+      "notes": "Own venv + basicsr/gfpgan/numpy patches; offline clip path only."
+    }
+  },
+  "clips": [],
+  "status": "reviewed"
+}

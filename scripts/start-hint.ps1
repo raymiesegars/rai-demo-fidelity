@@ -1,21 +1,13 @@
-# Start all three services in separate terminals (run from repo root)
+# Quick pointers for the local avatar Demo.
+# Full install steps: services\avatar\docs\LOCAL_SETUP.md
 
-Write-Host "Patient Fidelity Demo" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Open 3 terminals and run:" -ForegroundColor Yellow
+Write-Host "Avatar Demo"
+Write-Host "  cd services\avatar"
+Write-Host "  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass"
+Write-Host "  .\run_server.ps1"
+Write-Host "  .\run_server.ps1 -Backend wav2lip -KillExisting"
 Write-Host ""
-Write-Host "  Terminal 1 - Avatar worker:" -ForegroundColor Green
-Write-Host "    cd services/avatar-worker"
-Write-Host "    .venv\Scripts\activate   # after: python -m venv .venv && pip install -r requirements.txt"
-Write-Host "    python main.py"
+Write-Host "Docs: services\avatar\docs\LOCAL_SETUP.md"
+Write-Host "Analytics site: apps\analytics\README.md"
 Write-Host ""
-Write-Host "  Terminal 2 - Agent:" -ForegroundColor Green
-Write-Host "    cd services/agent"
-Write-Host "    .venv\Scripts\activate"
-Write-Host "    python main.py dev"
-Write-Host ""
-Write-Host "  Terminal 3 - Web:" -ForegroundColor Green
-Write-Host "    cd apps/web"
-Write-Host "    npm run dev"
-Write-Host ""
-Write-Host "Then open http://localhost:3000" -ForegroundColor Cyan

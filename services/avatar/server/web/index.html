@@ -1,0 +1,1718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Avatar</title>
+  <style>
+    :root {
+      --bg: #07090e; --panel: #10141d; --panel-2: #171c28; --line: #1f2634;
+      --accent: #6d8dff; --accent-2: #4a6ae0; --text: #ecf0f7; --muted: #7e8aa0;
+      --live: #3ddc84; --rec: #ff5d6c; --amber: #f5b34a;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      background:
+        radial-gradient(900px 500px at 20% -10%, #14204010, transparent),
+        radial-gradient(700px 500px at 90% 110%, #1a123510, transparent),
+        var(--bg);
+      color: var(--text); display: flex; flex-direction: column;
+    }
+    header {
+      padding: 12px 22px; display: flex; align-items: center; gap: 14px;
+      border-bottom: 1px solid var(--line); flex-shrink: 0;
+    }
+    header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); box-shadow: 0 0 12px #3ddc8488; }
+    header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .3px; }
+    nav.tabs { display: flex; gap: 4px; margin-left: 18px; }
+    nav.tabs button {
+      background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 500;
+      padding: 7px 14px; border-radius: 9px; cursor: pointer; font-family: inherit;
+    }
+    nav.tabs button:hover { color: var(--text); background: var(--panel-2); }
+    nav.tabs button.active { color: var(--text); background: var(--panel-2); border: 1px solid var(--line); }
+    header .stat { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); }
+    header .stat b { color: var(--text); font-weight: 600; }
+
+    .view { flex: 1; min-height: 0; display: none; }
+    .view.active { display: flex; }
+
+    main {
+      flex: 1; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(360px, 440px);
+      gap: 20px; padding: 20px; min-height: 0; align-items: stretch;
+    }
+    main.layout-landscape { grid-template-columns: minmax(0, 1.7fr) minmax(320px, 400px); }
+    main.layout-portrait { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
+
+    /* -------- stage -------- */
+    .stage {
+      position: relative; border-radius: 20px; overflow: hidden; background: #000;
+      border: 1px solid var(--line); box-shadow: 0 24px 80px #00000066;
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; aspect-ratio: var(--stage-ar, 16 / 9);
+      max-height: calc(100vh - 110px); min-height: 260px; height: auto;
+    }
+    .stage canvas { width: 100%; height: 100%; display: block; background: #000; }
+    .badge {
+      position: absolute; top: 16px; left: 16px; z-index: 4; display: flex; gap: 8px; align-items: center;
+      background: #000a; backdrop-filter: blur(10px); border: 1px solid #ffffff14;
+      padding: 7px 14px; border-radius: 999px; font-size: 12px; color: var(--muted);
+    }
+    .badge .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .stage.speaking .badge .pulse { background: var(--accent); animation: pulse 1s infinite; }
+    .stage.thinking .badge .pulse { background: var(--amber); animation: pulse .7s infinite; }
+    .stage.listening .badge .pulse { background: var(--rec); animation: pulse .9s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+    .caption {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; padding: 26px 24px 18px;
+      background: linear-gradient(to top, #000d, #0000); font-size: 15px; line-height: 1.45;
+      pointer-events: none; min-height: 24px; text-shadow: 0 1px 4px #000;
+    }
+
+    /* thinking dots on stage */
+    .think-dots {
+      position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 5;
+      display: none; gap: 6px; background: #000a; backdrop-filter: blur(8px);
+      border: 1px solid #ffffff14; padding: 10px 16px; border-radius: 999px;
+    }
+    .stage.thinking .think-dots { display: flex; }
+    .think-dots span {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--amber);
+      animation: bounce 1.2s infinite;
+    }
+    .think-dots span:nth-child(2) { animation-delay: .15s; }
+    .think-dots span:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce { 0%,60%,100%{transform:translateY(0);opacity:.4} 30%{transform:translateY(-5px);opacity:1} }
+
+    .drop {
+      position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; gap: 14px;
+      align-items: center; justify-content: center; background: #05070bd8; backdrop-filter: blur(6px);
+      border: 2px dashed #2a3448; margin: 18px; border-radius: 16px; cursor: pointer;
+      transition: border-color .2s, background .2s; text-align: center; padding: 20px;
+    }
+    .drop:hover, .drop.over { border-color: var(--accent); background: #0a0f18e8; }
+    .drop .big { font-size: 17px; font-weight: 600; }
+    .drop .sub { font-size: 13px; color: var(--muted); max-width: 340px; line-height: 1.5; }
+    .drop.hidden { display: none; }
+    .drop .spinner {
+      width: 34px; height: 34px; border-radius: 50%; border: 3px solid #2a3448;
+      border-top-color: var(--accent); animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .sound-gate {
+      position: absolute; inset: 0; z-index: 7; display: none; align-items: center; justify-content: center;
+      background: #05070bcc; backdrop-filter: blur(4px); cursor: pointer;
+    }
+    .sound-gate.show { display: flex; }
+    .sound-gate .inner {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+      padding: 18px 26px; font-size: 14px; font-weight: 600;
+    }
+
+    .swap-btn {
+      position: absolute; top: 16px; right: 16px; z-index: 5;
+      background: #000a; backdrop-filter: blur(10px); border: 1px solid #ffffff14;
+      color: var(--text); font-size: 12px; padding: 7px 14px; border-radius: 999px; cursor: pointer;
+    }
+    .swap-btn:hover { border-color: var(--accent); }
+
+    .framing-side {
+      border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+      background: var(--panel-2);
+    }
+    .framing-side label { display: block; font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+    .framing-side .note { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+    .framing-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .framing-btns button {
+      background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+      font-size: 11px; font-weight: 600; padding: 8px 6px; border-radius: 8px; cursor: pointer;
+      font-family: inherit;
+    }
+    .framing-btns button:hover { color: var(--text); border-color: var(--accent); }
+    .framing-btns button.active { color: var(--text); border-color: var(--accent); background: #1a2340; }
+
+    .drop-framing {
+      width: min(360px, 92%); margin-top: 4px; padding: 12px 14px;
+      background: #0a0f18cc; border: 1px solid #2a3448; border-radius: 12px;
+      cursor: default;
+    }
+    .drop-framing label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    .drop-framing .framing-btns button { font-size: 12px; padding: 9px 8px; }
+
+    /* -------- chat panel -------- */
+    .panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+      display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+    }
+    .messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .messages::-webkit-scrollbar { width: 8px; }
+    .messages::-webkit-scrollbar-thumb { background: #222b3d; border-radius: 4px; }
+    .msg { max-width: 86%; padding: 10px 14px; border-radius: 15px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: var(--accent-2); border-bottom-right-radius: 5px; }
+    .msg.bot { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+    .msg.bot.thinking { color: var(--muted); font-style: italic; border-style: dashed; }
+    .msg.meta { align-self: center; color: var(--muted); font-size: 11px; padding: 0; }
+    .empty { margin: auto; color: var(--muted); font-size: 13px; text-align: center; line-height: 1.7; padding: 24px; }
+
+    .controls { border-top: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .mic-btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+      border-radius: 12px; padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .15s;
+    }
+    .mic-btn:hover { border-color: var(--accent); }
+    .mic-btn.active { background: var(--rec); border-color: var(--rec); }
+    .composer { display: flex; gap: 10px; }
+    .composer input {
+      flex: 1; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+      border-radius: 12px; padding: 13px 15px; font-size: 14px; outline: none;
+    }
+    .composer input:focus { border-color: var(--accent); }
+    .composer button {
+      background: var(--accent); border: none; color: #fff; font-weight: 600; font-size: 14px;
+      border-radius: 12px; padding: 0 20px; cursor: pointer;
+    }
+    .composer button:disabled { opacity: .45; cursor: not-allowed; }
+    .hint { font-size: 11px; color: var(--muted); text-align: center; min-height: 14px; }
+
+    /* -------- analytics / model comparison -------- */
+    .analytics { flex: 1; overflow-y: auto; padding: 22px 28px 48px; max-width: 1280px; margin: 0 auto; width: 100%; }
+    .analytics-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; }
+    .analytics h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: .2px; }
+    .analytics .sub { color: var(--muted); font-size: 13px; margin: 0; max-width: 640px; line-height: 1.45; }
+    .analytics h3 { font-size: 12px; margin: 28px 0 12px; color: var(--accent); text-transform: uppercase; letter-spacing: .55px; }
+    .analytics-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .analytics-actions button, .score-form button {
+      background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+      border-radius: 10px; padding: 9px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .analytics-actions button.primary { background: #1a2340; border-color: var(--accent); color: #c9d6ff; }
+    .analytics-actions button:hover, .score-form button:hover { border-color: var(--accent); }
+    .analytics-actions button:disabled { opacity: .45; cursor: default; }
+
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    .kpi {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
+    }
+    .kpi .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .45px; color: var(--muted); margin-bottom: 6px; }
+    .kpi .val { font-size: 22px; font-weight: 650; letter-spacing: -.3px; }
+    .kpi .val.good { color: var(--live); }
+    .kpi .val.warn { color: var(--amber); }
+    .kpi .note { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+    .chart-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+    .chart-card canvas { width: 100%; height: 180px; display: block; }
+    .chart-card .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 10px; }
+    .chart-card .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 11px; color: var(--muted); }
+    .chart-card .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+    .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .tbl th, .tbl td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+    .tbl th { color: var(--muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
+    .tbl td.num { font-variant-numeric: tabular-nums; }
+    .tbl tr:hover td { background: #121826; }
+    .pill {
+      display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--line); color: var(--muted); background: #0c1018;
+    }
+    .pill.active { color: var(--live); border-color: #2a5a40; }
+    .pill.partial { color: var(--amber); border-color: #5a4a20; }
+    .pill.empty { color: var(--muted); }
+    .pill.reviewed { color: #8ec7ff; border-color: #2a4060; }
+
+    .score-panel {
+      display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start;
+    }
+    @media (max-width: 900px) { .score-panel { grid-template-columns: 1fr; } }
+    .score-form, .live-box {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+    }
+    .score-form label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 5px; }
+    .score-form select, .score-form input, .score-form textarea {
+      width: 100%; background: #0b0f16; border: 1px solid var(--line); color: var(--text);
+      border-radius: 9px; padding: 9px 10px; font-size: 13px; font-family: inherit;
+    }
+    .score-form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .score-form .hint { font-size: 11px; color: var(--muted); margin-top: 10px; line-height: 1.4; }
+    .method-panel {
+      margin: 0 0 22px; padding: 18px 20px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 14px; font-size: 13px; line-height: 1.55; color: var(--muted);
+    }
+    .method-panel .method-lead { margin: 0 0 12px; color: var(--text); }
+    .method-panel .method-steps { margin: 0 0 14px; padding-left: 18px; }
+    .method-panel .method-steps li { margin: 0 0 10px; }
+    .method-panel code {
+      font-size: 12px; background: #0b0f16; border: 1px solid var(--line);
+      padding: 1px 6px; border-radius: 6px; color: #c5d0e6;
+    }
+    .method-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 0 0 12px;
+    }
+    @media (max-width: 800px) { .method-grid { grid-template-columns: 1fr; } }
+    .method-grid .tag {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+      color: var(--muted); margin-bottom: 6px;
+    }
+    .method-grid ul { margin: 0; padding-left: 18px; }
+    .method-foot { margin: 0; font-size: 12px; }
+    .score-form .save-row { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+    .score-form .save-msg { font-size: 12px; color: var(--live); }
+
+    .sliders { display: grid; gap: 10px; margin: 12px 0 16px; }
+    .slider { display: grid; grid-template-columns: 160px 1fr 70px; gap: 12px; align-items: center; font-size: 12px; }
+    .slider label { color: var(--muted); }
+    .slider input { width: 100%; }
+    .slider .sv { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+
+    .cat-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 8px; }
+    @media (max-width: 900px) { .cat-strip { grid-template-columns: 1fr; } }
+    .cat-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    }
+    .cat-card b { display: block; font-size: 12px; margin-bottom: 4px; }
+    .cat-card span { font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .cat-card .auto { float: right; font-size: 10px; color: var(--accent); }
+
+    @media (max-width: 920px) { main { grid-template-columns: 1fr; grid-template-rows: 48% 52%; } }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <h1>Live Avatar</h1>
+    <nav class="tabs">
+      <button id="tab-demo" class="active">Demo</button>
+      <button id="tab-analytics">Analytics</button>
+    </nav>
+    <div class="stat">
+      <span>backend <b id="st-backend">…</b></span>
+      <span>engine <b id="st-engine">…</b></span>
+      <span>gen <b id="st-gen">–</b></span>
+      <span>first word <b id="st-ttfw">–</b></span>
+    </div>
+  </header>
+
+  <div class="view active" id="view-demo">
+  <main id="main">
+    <section class="stage" id="stage">
+      <div class="badge"><span class="pulse"></span><span id="badge-text">Idle</span></div>
+      <button class="swap-btn" id="swap" hidden>Change face</button>
+      <canvas id="cv" width="512" height="512"></canvas>
+      <div class="caption" id="caption"></div>
+      <div class="think-dots"><span></span><span></span><span></span></div>
+      <div class="sound-gate" id="sound-gate"><div class="inner">🔊 Click to start live audio + video</div></div>
+      <div class="drop" id="drop">
+        <div class="spinner" id="drop-spin" style="display:none"></div>
+        <div class="big" id="drop-title">Jordan Blake (default bench portrait)</div>
+        <div class="sub" id="drop-sub">Waiting for engine to finish preparing…</div>
+        <button type="button" id="btn-use-jordan" style="margin:10px 0 4px;padding:10px 14px;border-radius:10px;border:1px solid var(--accent);background:#1a2340;color:var(--text);font:inherit;cursor:pointer">Continue with Jordan Blake</button>
+        <div class="drop-framing" id="drop-framing" onclick="event.stopPropagation()">
+          <label>How much of the photo to show</label>
+          <div class="framing-btns" id="drop-framing-btns">
+            <button type="button" data-framing="0">Close-up</button>
+            <button type="button" data-framing="0.33">Portrait</button>
+            <button type="button" data-framing="0.66">Upper body</button>
+            <button type="button" data-framing="1" class="active">Full image</button>
+          </div>
+        </div>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="messages" id="messages">
+        <div class="empty" id="empty">Upload a face, then talk or type.<br/>Everything is generated live — no pre-rendered clips.</div>
+      </div>
+      <div class="controls">
+        <div class="framing-side">
+          <label>Image framing</label>
+          <div class="framing-btns" id="panel-framing-btns">
+            <button type="button" data-framing="0">Close-up</button>
+            <button type="button" data-framing="0.33">Portrait</button>
+            <button type="button" data-framing="0.66">Upper body</button>
+            <button type="button" data-framing="1" class="active">Full image</button>
+          </div>
+          <div class="note">Full image keeps your sharp photo still and only animates the face. Close-up uses the full AI video frame. Layout adapts to your photo orientation.</div>
+        </div>
+        <button class="mic-btn" id="mic">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+          <span id="mic-label">Start conversation</span>
+        </button>
+        <form class="composer" id="composer">
+          <input id="input" type="text" placeholder="Say something…" autocomplete="off" />
+          <button id="send" type="submit">Send</button>
+        </form>
+        <div class="hint" id="hint"></div>
+      </div>
+    </section>
+  </main>
+  </div>
+
+  <div class="view" id="view-analytics">
+    <div class="analytics">
+      <div class="analytics-head">
+        <div>
+          <h2>Model comparison</h2>
+          <p class="sub">Side-by-side metrics for all registered backends. Automated numbers come from local benches; fidelity and uncanny scores are manual; hosting is curated.</p>
+        </div>
+        <div class="analytics-actions">
+          <button type="button" class="primary" id="btn-run-bench">Run 10-dialogue test</button>
+          <button type="button" id="btn-capture">Capture live stats → results</button>
+          <button type="button" id="btn-clear-results" title="Wipe scores for the selected model in the score form">Clear selected results</button>
+          <button type="button" id="btn-refresh-cmp">Refresh charts</button>
+          <button type="button" id="btn-export-csv">Export CSV</button>
+        </div>
+      </div>
+
+      <div class="bench-run" id="bench-run" style="display:none;margin:0 0 18px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:14px">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+          <div>
+            <b id="bench-run-title">Standard 10-turn bench</b>
+            <div class="sub" id="bench-run-status" style="margin:4px 0 0">Idle</div>
+          </div>
+          <div style="font-size:12px;color:var(--muted)" id="bench-run-progress">0 / 10</div>
+        </div>
+        <div style="margin-top:10px;height:6px;background:#0b0f16;border-radius:99px;overflow:hidden">
+          <div id="bench-run-bar" style="height:100%;width:0%;background:var(--accent);transition:width .25s"></div>
+        </div>
+        <ol id="bench-run-list" style="margin:12px 0 0;padding-left:18px;font-size:12px;color:var(--muted);line-height:1.55;max-height:160px;overflow:auto"></ol>
+      </div>
+
+      <div class="cat-strip" id="cat-strip"></div>
+
+      <h3>Comparison matrix</h3>
+      <div style="overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)">
+        <table class="tbl" id="cmp-table">
+          <thead>
+            <tr>
+              <th>Model</th><th>Status</th><th>Modality</th><th>RT factor</th><th>Gen ms</th>
+              <th>Sessions/GPU</th><th>$/sess-hr</th><th>Fidelity</th><th>Uncanny↑</th><th>Composite</th><th>Hosting</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h3>Charts</h3>
+      <div class="chart-grid">
+        <div class="chart-card">
+          <div class="tag">Realtime factor (higher = faster than playback)</div>
+          <canvas id="chart-rtf" height="180"></canvas>
+          <div class="legend" id="leg-rtf"></div>
+        </div>
+        <div class="chart-card">
+          <div class="tag">Sessions per GPU (concurrency)</div>
+          <canvas id="chart-spg" height="180"></canvas>
+          <div class="legend" id="leg-spg"></div>
+        </div>
+        <div class="chart-card">
+          <div class="tag">GPU cost $/session-hour (lower better)</div>
+          <canvas id="chart-cost" height="180"></canvas>
+          <div class="legend" id="leg-cost"></div>
+        </div>
+        <div class="chart-card">
+          <div class="tag">Fidelity / uncanny (manual) + hosting (curated)</div>
+          <canvas id="chart-manual" height="180"></canvas>
+          <div class="legend" id="leg-manual"></div>
+        </div>
+      </div>
+
+      <h3>How cost prediction is calculated</h3>
+      <div class="method-panel" id="cost-method">
+        <p class="method-lead">
+          <b>$/sess-hr</b> is an estimate of <em>GPU-only</em> cost to run one concurrent talking session for one hour,
+          derived from the live bench on this machine — not a cloud invoice.
+        </p>
+        <ol class="method-steps">
+          <li>
+            <b>Measure busy_ratio during the 10-dialogue (or Capture) run.</b>
+            Continuous models (FlashHead): <code>chunk_gen_ms ÷ chunk_duration</code>.
+            Clip models (Ditto / MuseTalk / Wav2Lip): <code>utterance_render_ms ÷ audio_duration</code>.
+            Example: 6&nbsp;s of GPU work for 2&nbsp;s of speech → busy_ratio ≈ <b>3.0</b>.
+          </li>
+          <li>
+            <b>Convert to effective sessions per GPU</b> with 15% headroom:
+            <code>eff_sessions = 0.85 ÷ busy_ratio</code>,
+            also capped by VRAM (<code>0.9 × VRAM_total ÷ VRAM_used</code>).
+            This value is <em>fractional</em> — below 1 means the model is slower than realtime
+            (you need more than one GPU-hour per session-hour of speech).
+          </li>
+          <li>
+            <b>GPU $/session-hour</b> =
+            <code>$0.44 ÷ eff_sessions</code>
+            (RunPod-class RTX 4090 Secure rate used in this project).
+            So FlashHead at busy≈0.48 → ~1.77 sessions → <b>~$0.25</b>;
+            a slow clip model at busy≈2.7 → ~0.31 sessions → <b>~$1.42</b>.
+          </li>
+          <li>
+            <b>Scale projection (right panel)</b> layers non-GPU stack costs on top for fleet planning:
+            LiveKit minutes, TTS chars, LLM turns — using the sliders for concurrency / talk fraction.
+            Matrix <b>$/sess-hr</b> stays GPU-only so models compare fairly.
+          </li>
+        </ol>
+        <div class="method-grid">
+          <div>
+            <div class="tag">Inputs from testing</div>
+            <ul>
+              <li>gen_ms / utterance render times</li>
+              <li>busy_ratio (GPU-s ÷ speech-s)</li>
+              <li>VRAM used vs total</li>
+              <li>Fixed pod rate $0.44/hr</li>
+            </ul>
+          </div>
+          <div>
+            <div class="tag">What it is / isn’t</div>
+            <ul>
+              <li>Is: relative GPU cost under our harness</li>
+              <li>Is: sensitive to real measured load</li>
+              <li>Isn’t: TTS/LLM/network invoice</li>
+              <li>Isn’t: TensorRT / multi-tenant packing magic</li>
+            </ul>
+          </div>
+        </div>
+        <p class="method-foot">
+          Re-run <b>Run 10-dialogue test</b> or <b>Capture live stats</b> after changing backends so busy_ratio
+          reflects the current install. Refresh charts to recompute $/sess-hr from saved busy_ratio.
+        </p>
+      </div>
+
+      <h3>Score this session (manual)</h3>
+      <div class="score-panel">
+        <form class="score-form" id="score-form">
+          <label>Model</label>
+          <select id="score-model"></select>
+          <div class="row2">
+            <div>
+              <label>Fidelity overall (1–10)</label>
+              <input id="score-fidelity" type="number" min="1" max="10" step="0.5" placeholder="7" />
+            </div>
+            <div>
+              <label>Uncanny valley (10 = natural)</label>
+              <input id="score-uncanny" type="number" min="1" max="10" step="0.5" placeholder="6" />
+            </div>
+          </div>
+          <div class="row2">
+            <div>
+              <label>Composite stability (no face swim)</label>
+              <input id="score-composite" type="number" min="1" max="10" step="0.5" placeholder="8" />
+            </div>
+            <div>
+              <label>Lip sync</label>
+              <input id="score-lips" type="number" min="1" max="10" step="0.5" placeholder="7" />
+            </div>
+          </div>
+          <div class="row2">
+            <div>
+              <label>Identity lock</label>
+              <input id="score-identity" type="number" min="1" max="10" step="0.5" placeholder="8" />
+            </div>
+            <div></div>
+          </div>
+          <p class="hint">Hosting / ops is curated in <code>bench/results/*.json</code> (not scored here).</p>
+          <label>Notes</label>
+          <textarea id="score-notes" rows="3" placeholder="Teeth flicker, shoulder swim, background crush…"></textarea>
+          <div class="save-row">
+            <button type="submit">Save scores</button>
+            <span class="save-msg" id="score-msg"></span>
+          </div>
+          <p class="hint">Use <b>Full image</b> framing on Demo so face-only models are composited into a locked rect — never re-detect face each frame.</p>
+        </form>
+        <div class="live-box">
+          <div class="tag" style="font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:10px">Live engine (active backend)</div>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
+            <div class="kpi"><div class="tag">Chunk gen</div><div class="val" id="a-gen">–</div><div class="note">ms / chunk</div></div>
+            <div class="kpi"><div class="tag">Realtime</div><div class="val" id="a-rtf">–</div><div class="note">× playback</div></div>
+            <div class="kpi"><div class="tag">Sessions/GPU</div><div class="val" id="a-spg">–</div><div class="note">from busy ratio</div></div>
+            <div class="kpi"><div class="tag">VRAM</div><div class="val" id="a-vram">–</div><div class="note" id="a-vram-note">–</div></div>
+          </div>
+          <div class="chart-card" style="margin-top:12px;padding:12px">
+            <div class="tag">Chunk generation (ms, live)</div>
+            <canvas id="chart-gen" height="90" style="height:90px"></canvas>
+          </div>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+            <div class="kpi"><div class="tag">TTFW</div><div class="val" id="a-ttfw">–</div><div class="note">send → on screen</div></div>
+            <div class="kpi"><div class="tag">TTS first audio</div><div class="val" id="a-tts">–</div><div class="note">server</div></div>
+            <div class="kpi"><div class="tag">LLM first</div><div class="val" id="a-llm">–</div><div class="note">avg turn</div></div>
+            <div class="kpi"><div class="tag">Video pipeline</div><div class="val" id="a-vid">–</div><div class="note">audio → frames</div></div>
+          </div>
+          <h3 style="margin-top:18px">Scale projection</h3>
+          <div class="sliders">
+            <div class="slider"><label>Concurrent users</label><input type="range" id="s-conc" min="100" max="10000" step="100" value="7000"><div class="sv" id="v-conc">7,000</div></div>
+            <div class="slider"><label>Avg talk fraction</label><input type="range" id="s-talk" min="10" max="80" step="5" value="40"><div class="sv" id="v-talk">40%</div></div>
+            <div class="slider"><label>Session length (min)</label><input type="range" id="s-len" min="3" max="60" step="1" value="10"><div class="sv" id="v-len">10 min</div></div>
+          </div>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
+            <div class="kpi"><div class="tag">GPUs needed</div><div class="val" id="p-gpus">–</div><div class="note" id="p-gpus-note">–</div></div>
+            <div class="kpi"><div class="tag">Peak GPU cost</div><div class="val" id="p-gpu-cost">–</div><div class="note">4090 @ $0.44/hr</div></div>
+            <div class="kpi"><div class="tag">All-in / sess-hr</div><div class="val" id="p-sess">–</div><div class="note">GPU+LK+TTS+LLM</div></div>
+            <div class="kpi"><div class="tag">Peak hour all-in</div><div class="val" id="p-hour">–</div><div class="note" id="p-hour-note">–</div></div>
+          </div>
+        </div>
+      </div>
+
+      <h3>Turn history (live)</h3>
+      <table class="tbl" id="turn-table">
+        <thead><tr><th>#</th><th>LLM first</th><th>First audio</th><th>On screen</th><th>Sentences</th><th>Chars</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="grid" style="margin-top:14px">
+        <div class="kpi"><div class="tag">Frames rendered</div><div class="val" id="a-frames">0</div><div class="note" id="a-fps">–</div></div>
+        <div class="kpi"><div class="tag">Buffer depth</div><div class="val" id="a-buf">–</div><div class="note">audio ahead</div></div>
+        <div class="kpi"><div class="tag">Silence skipped</div><div class="val" id="a-skip">0s</div><div class="note">idle FF</div></div>
+        <div class="kpi"><div class="tag">Chunks speak/total</div><div class="val" id="a-chunks">–</div><div class="note">server</div></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("cv"), ctx = canvas.getContext("2d");
+    const stage = $("stage"), mainEl = $("main"), badge = $("badge-text"), caption = $("caption");
+    const messagesEl = $("messages"), emptyEl = $("empty");
+    const input = $("input"), sendBtn = $("send"), hint = $("hint");
+
+    // ---------------- tabs ----------------
+    function showTab(name) {
+      $("view-demo").classList.toggle("active", name === "demo");
+      $("view-analytics").classList.toggle("active", name === "analytics");
+      $("tab-demo").classList.toggle("active", name === "demo");
+      $("tab-analytics").classList.toggle("active", name === "analytics");
+      if (name === "analytics") {
+        loadComparison().then(loadScoreDraft);
+        requestAnimationFrame(() => {
+          if (cmpData) renderComparison(cmpData);
+          if (lastStats && lastStats.gen_ms_recent) sparkline($("chart-gen"), lastStats.gen_ms_recent, "#6d8dff");
+        });
+      }
+    }
+    $("tab-demo").onclick = () => showTab("demo");
+    $("tab-analytics").onclick = () => showTab("analytics");
+
+    // ---------------- audio/video stream ----------------
+    // Server pushes ~0.96s chunks (meta JSON + pcm16 + 24 jpegs). All playback
+    // is clocked by WebAudio. Fixes vs v1:
+    //  * nothing is scheduled while the AudioContext is suspended (no backlog)
+    //  * playhead re-anchors if it drifts too far ahead
+    //  * speaking chunks fast-forward through scheduled silence (latency cut)
+    const FPS = 25, SR = 16000;
+    const MAX_IDLE_BUFFER = 1.6;   // s of scheduled-ahead audio allowed when idle
+    let audioCtx = null, playhead = 0, firstDraw = true;
+    let scheduled = [];            // {t0, dur, speaking, src, seq}
+    let frameQueue = [];           // {img, t, seq}
+    let pendingMeta = null, chunkT0 = 0, chunkIdx = 0, curSeq = -1;
+    let speakingUntil = 0, skippedSilence = 0, framesRendered = 0;
+    let fpsWindow = [];
+
+    // speech timeline for caption sync: {t0, dur, speechS}
+    let speechChunks = [];
+    let session = { composite: true, source_w: 16, source_h: 9, overlay: null };
+    let staticImg = null, faceFrame = null;
+
+    function resizeCanvas() {
+      const rect = stage.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(rect.width * dpr));
+      const h = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    }
+
+    function applyLayout(w, h) {
+      if (!w || !h) return;
+      stage.style.setProperty("--stage-ar", `${w} / ${h}`);
+      mainEl.classList.remove("layout-landscape", "layout-portrait");
+      if (w > h * 1.12) mainEl.classList.add("layout-landscape");
+      else if (h > w * 1.12) mainEl.classList.add("layout-portrait");
+      resizeCanvas();
+    }
+
+    function coverTransform(imgW, imgH, cw, ch) {
+      const scale = Math.max(cw / imgW, ch / imgH);
+      const dw = imgW * scale, dh = imgH * scale;
+      return { dx: (cw - dw) / 2, dy: (ch - dh) / 2, dw, dh };
+    }
+
+    function normRectToCanvas(rect, imgW, imgH, cw, ch) {
+      const t = coverTransform(imgW, imgH, cw, ch);
+      const scale = t.dw / imgW;
+      const [nx1, ny1, nx2, ny2] = rect;
+      return {
+        x: t.dx + nx1 * imgW * scale,
+        y: t.dy + ny1 * imgH * scale,
+        w: (nx2 - nx1) * imgW * scale,
+        h: (ny2 - ny1) * imgH * scale,
+      };
+    }
+
+    function drawImageCover(targetCtx, img, cw, ch) {
+      const t = coverTransform(img.width, img.height, cw, ch);
+      targetCtx.drawImage(img, t.dx, t.dy, t.dw, t.dh);
+    }
+
+    async function loadStaticSource() {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = `/avatar/source?ts=${Date.now()}`;
+      });
+      staticImg = img;
+    }
+
+    async function applySession(info) {
+      if (!info) return;
+      session = { ...session, ...info };
+      if (info.framing != null) syncFramingButtons(info.framing);
+      applyLayout(info.source_w, info.source_h);
+      // Always keep a static portrait for idle / pre-AV loading (even when
+      // the backend streams full frames and composite=false).
+      try { await loadStaticSource(); } catch { staticImg = null; }
+      paintFrame(faceFrame);
+      // Default Jordan (or any prepared avatar) should dismiss the drop overlay
+      // without requiring a manual upload or unlocked audio.
+      if (info.ready || (info.source_w && staticImg)) {
+        $("drop").classList.add("hidden");
+        $("swap").hidden = false;
+        firstDraw = false;
+      }
+    }
+
+    function sourceDims() {
+      if (staticImg) return { w: staticImg.naturalWidth, h: staticImg.naturalHeight };
+      return { w: session.source_w, h: session.source_h };
+    }
+
+    function paintFaceOverlay(animImg) {
+      const { w: imgW, h: imgH } = sourceDims();
+      const cw = canvas.width, ch = canvas.height;
+      const r = normRectToCanvas(session.overlay, imgW, imgH, cw, ch);
+      // Map the square model frame 1:1 onto the source crop rect (no circular mask).
+      ctx.drawImage(animImg, r.x, r.y, r.w, r.h);
+    }
+
+    function paintFrame(animImg) {
+      const cw = canvas.width, ch = canvas.height;
+      if (!cw || !ch) return;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, cw, ch);
+      if (session.composite && staticImg) {
+        drawImageCover(ctx, staticImg, cw, ch);
+        if (animImg && session.overlay) paintFaceOverlay(animImg);
+      } else if (animImg) {
+        drawImageCover(ctx, animImg, cw, ch);
+      } else if (staticImg) {
+        drawImageCover(ctx, staticImg, cw, ch);
+      }
+    }
+
+    function ensureAudio() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      updateSoundGate();
+    }
+    function audioLive() { return audioCtx && audioCtx.state === "running"; }
+    function updateSoundGate() {
+      $("sound-gate").classList.toggle("show", !audioCtx || audioCtx.state !== "running");
+    }
+    $("sound-gate").onclick = ensureAudio;
+    // any first interaction unlocks audio
+    ["pointerdown", "keydown"].forEach(ev =>
+      window.addEventListener(ev, ensureAudio, { once: true, capture: true }));
+
+    function dropChunkFrames(seq) {
+      frameQueue = frameQueue.filter(f => { if (f.seq === seq) { f.img.close?.(); return false; } return true; });
+    }
+
+    function fastForwardSilence(now) {
+      // stop all scheduled non-speaking audio and drop its frames
+      let skipped = 0;
+      for (const c of scheduled) {
+        if (!c.speaking && c.t0 + c.dur > now) {
+          skipped += Math.min(c.dur, c.t0 + c.dur - Math.max(now, c.t0));
+          try { c.src.stop(); } catch {}
+          dropChunkFrames(c.seq);
+        }
+      }
+      scheduled = scheduled.filter(c => c.speaking && c.t0 + c.dur > now);
+      if (skipped > 0.05) {
+        skippedSilence += skipped;
+        $("a-skip").textContent = skippedSilence.toFixed(1) + "s";
+        playhead = Math.max(now + 0.12, ...scheduled.map(c => c.t0 + c.dur), 0);
+      }
+      return skipped;
+    }
+
+    function connectStream() {
+      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/stream`);
+      ws.binaryType = "arraybuffer";
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "session") { applySession(msg); return; }
+          pendingMeta = msg;
+          if (pendingMeta.gen_ms) $("st-gen").textContent = pendingMeta.gen_ms + "ms";
+          return;
+        }
+        const view = new Uint8Array(ev.data);
+        const kind = view[0], payload = view.subarray(1);
+
+        if (kind === 0x02) {                       // audio chunk
+          if (!audioLive()) { curSeq = -1; updateSoundGate(); return; }  // no backlog while suspended
+          const now = audioCtx.currentTime;
+          const meta = pendingMeta || { speaking: false, seq: -1, speech_s: 0 };
+
+          if (meta.speaking) fastForwardSilence(now);
+
+          // keep idle buffer shallow; re-anchor if we drifted ahead
+          if (!meta.speaking && playhead - now > MAX_IDLE_BUFFER) { curSeq = -1; return; } // drop idle chunk
+          if (playhead < now + 0.1) playhead = now + 0.18;
+
+          // payload starts at byte 1 of the message — copy to an aligned
+          // buffer (Int16Array views require an even byteOffset).
+          const pcm = new Int16Array(ev.data.slice(1));
+          const f32 = new Float32Array(pcm.length);
+          for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;
+          const buf = audioCtx.createBuffer(1, f32.length, SR);
+          buf.copyToChannel(f32, 0);
+          const src = audioCtx.createBufferSource();
+          src.buffer = buf; src.connect(audioCtx.destination); src.start(playhead);
+
+          scheduled.push({ t0: playhead, dur: buf.duration, speaking: meta.speaking, src, seq: meta.seq });
+          if (scheduled.length > 40) scheduled = scheduled.filter(c => c.t0 + c.dur > now - 2);
+          if (meta.speaking) {
+            speakingUntil = Math.max(speakingUntil, playhead + buf.duration);
+            speechChunks.push({ t0: playhead, dur: buf.duration, speechS: meta.speech_s || buf.duration });
+            if (speechChunks.length > 200) speechChunks.splice(0, 100);
+          }
+          chunkT0 = playhead; chunkIdx = 0; curSeq = meta.seq;
+          playhead += buf.duration;
+        } else if (kind === 0x01) {                // jpeg frame
+          if (curSeq === -1) return;               // frames of a dropped chunk
+          const t = chunkT0 + (chunkIdx++) / FPS, seq = curSeq;
+          createImageBitmap(new Blob([payload], { type: "image/jpeg" }))
+            .then(img => frameQueue.push({ img, t, seq }));
+        }
+      };
+      ws.onclose = () => setTimeout(connectStream, 1200);
+    }
+
+    function render() {
+      resizeCanvas();
+      if (audioLive()) {
+        const now = audioCtx.currentTime;
+        let gotFrame = false;
+        while (frameQueue.length && frameQueue[0].t <= now) {
+          if (faceFrame) faceFrame.close?.();
+          faceFrame = frameQueue.shift().img;
+          gotFrame = true;
+        }
+        // Always paint: static idle portrait and/or streamed frames.
+        paintFrame(faceFrame);
+        if (gotFrame) {
+          if (firstDraw) { $("drop").classList.add("hidden"); $("swap").hidden = false; firstDraw = false; }
+          framesRendered++;
+          fpsWindow.push(performance.now());
+          if (waitingFirstWord && now < speakingUntil) markFirstWord();
+        }
+        tickCaption(now);
+        updateBadge(now);
+      } else {
+        // Unlock audio for sync playback, but still show the portrait.
+        paintFrame(faceFrame);
+      }
+      requestAnimationFrame(render);
+    }
+
+    function updateBadge(now) {
+      if (now < speakingUntil) setState("speaking", "Speaking");
+      else if (busy) setState("thinking", "Thinking");
+      else if (recActive) setState("listening", "Listening");
+      else setState("", "Live");
+    }
+    function setState(cls, label) {
+      stage.className = "stage" + (cls ? " " + cls : "");
+      badge.textContent = label;
+    }
+
+    // ---------------- captions synced to speech ----------------
+    // sentences: {text, dur, cumStart}; progress = seconds of speech played
+    let sentences = [], sentencesDone = 0, captionTotal = 0;
+    let botDiv = null, thinkDiv = null;
+
+    function playedSpeech(now) {
+      let s = 0;
+      for (const c of speechChunks) {
+        if (now >= c.t0 + c.dur) s += c.speechS;
+        else if (now > c.t0) s += (now - c.t0) / c.dur * c.speechS;
+      }
+      return s;
+    }
+
+    function ensureBotBubble() {
+      if (thinkDiv) { thinkDiv.remove(); thinkDiv = null; }
+      if (!botDiv) botDiv = addMessage("bot", "");
+      return botDiv;
+    }
+
+    function updateChatBubble(text) {
+      const el = ensureBotBubble();
+      if (el.textContent !== text) {
+        el.textContent = text;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+    }
+
+    function tickCaption(now) {
+      if (!sentences.length) return;
+      const played = playedSpeech(now);
+      let acc = 0, shown = [];
+      for (const sn of sentences) {
+        if (played >= acc + sn.dur) { shown.push(sn.text); acc += sn.dur; continue; }
+        if (played > acc) {
+          const frac = (played - acc) / sn.dur;
+          const words = sn.text.split(/\s+/);
+          shown.push(words.slice(0, Math.max(1, Math.ceil(frac * words.length))).join(" "));
+        }
+        break;
+      }
+      const text = shown.join(" ");
+      if (text) caption.textContent = text;
+    }
+
+    // ---------------- image upload ----------------
+    const drop = $("drop"), fileIn = $("file");
+    const FRAMING_PRESETS = [
+      { value: 0, label: "close-up" },
+      { value: 0.33, label: "portrait" },
+      { value: 0.66, label: "upper body" },
+      { value: 1, label: "full image" },
+    ];
+    let framingLevel = 1, reframeTimer = null, reframeBusy = false;
+
+    function applySourceAspect(w, h) { applyLayout(w, h); }
+
+    function framingLabel(value) {
+      const hit = FRAMING_PRESETS.find((p) => p.value === value);
+      return hit ? hit.label : "full image";
+    }
+
+    function syncFramingButtons(value) {
+      framingLevel = value;
+      for (const group of document.querySelectorAll(".framing-btns")) {
+        for (const btn of group.querySelectorAll("button[data-framing]")) {
+          btn.classList.toggle("active", Math.abs(+btn.dataset.framing - value) < 0.001);
+        }
+      }
+    }
+
+    function framingValue() { return framingLevel; }
+
+    function bindFramingButtons(group, onPick) {
+      if (!group) return;
+      for (const btn of group.querySelectorAll("button[data-framing]")) {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const v = +btn.dataset.framing;
+          syncFramingButtons(v);
+          onPick(v);
+        });
+      }
+    }
+
+    function scheduleReframe() {
+      if (reframeTimer) clearTimeout(reframeTimer);
+      reframeTimer = setTimeout(async () => {
+        if (reframeBusy) return;
+        reframeBusy = true;
+        try {
+          const r = await fetch("/avatar/reframe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ framing: framingValue() }),
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "reframe failed");
+          await applySession(j);
+          addMeta(`Framing: ${framingLabel(framingLevel)}`);
+        } catch (err) {
+          hint.textContent = err.message;
+        }
+        reframeBusy = false;
+      }, 300);
+    }
+
+    bindFramingButtons($("panel-framing-btns"), () => scheduleReframe());
+    bindFramingButtons($("drop-framing-btns"), () => {});
+    $("btn-use-jordan").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      ensureAudio();
+      $("drop-spin").style.display = "block";
+      $("drop-title").textContent = "Loading Jordan Blake…";
+      $("drop-sub").textContent = "Preparing Full-image avatar (no upload needed).";
+      try {
+        const r = await fetch("/bench/reset-portrait", { method: "POST" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "reset failed");
+        await applySession(j);
+        addMeta(`Jordan Blake ready in ${(j.prep_ms / 1000).toFixed(1)}s`);
+      } catch (err) {
+        $("drop-title").textContent = "Could not load Jordan";
+        $("drop-sub").textContent = err.message;
+      }
+      $("drop-spin").style.display = "none";
+    });
+    drop.addEventListener("click", (e) => {
+      if (e.target.closest("#btn-use-jordan, #drop-framing, .framing-btns")) return;
+      fileIn.click();
+    });
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault(); drop.classList.remove("over");
+      if (e.dataTransfer.files[0]) uploadImage(e.dataTransfer.files[0]);
+    });
+    fileIn.addEventListener("change", () => fileIn.files[0] && uploadImage(fileIn.files[0]));
+    $("swap").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $("drop-spin").style.display = "none";
+      $("drop-title").textContent = "Jordan Blake (default bench portrait)";
+      $("drop-sub").textContent = "Click Continue with Jordan Blake, or drop a different photo.";
+      $("drop").classList.remove("hidden");
+    });
+
+    async function uploadImage(file) {
+      ensureAudio();
+      $("drop-spin").style.display = "block";
+      $("drop-title").textContent = "Preparing avatar…";
+      $("drop-sub").textContent = "Encoding face and warming the generator (~5–15s).";
+      const fd = new FormData(); fd.append("file", file); fd.append("framing", String(framingValue()));
+      try {
+        const r = await fetch("/avatar", { method: "POST", body: fd });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "upload failed");
+        await applySession(j);
+        addMeta(`Avatar ready in ${(j.prep_ms / 1000).toFixed(1)}s (${framingLabel(framingLevel)}, ${j.source_w}×${j.source_h})`);
+        $("drop").classList.add("hidden");
+        $("drop-title").textContent = "Drop any portrait photo";
+      } catch (err) {
+        $("drop-title").textContent = "That image didn't work";
+        $("drop-sub").textContent = err.message + " — try a clearer, front-facing portrait.";
+      }
+      $("drop-spin").style.display = "none";
+    }
+
+    // ---------------- chat ----------------
+    let chatWs = null, busy = false;
+    let waitingFirstWord = false, tSend = 0, lastServerAudioMs = 0;
+    const history = [], turnClient = [];
+    let pendingReplyText = "";  // hold bubble until AV actually starts
+
+    function connectChat() {
+      chatWs = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/chat`);
+      chatWs.onmessage = (ev) => {
+        const m = JSON.parse(ev.data);
+        if (m.type === "speech_text") {
+          sentences.push({ text: m.text, dur: m.dur });
+          pendingReplyText = sentences.map((s) => s.text).join(" ");
+          // Keep loading until audio+video start together (markFirstWord).
+          const backend = ($("st-backend").textContent || "").toLowerCase();
+          let msg = "Generating lipsync…";
+          if (backend.includes("liveportrait")) {
+            msg = "Generating lipsync (LivePortrait ~1–2 min on CPU warp)…";
+          } else if (backend.includes("flashhead") && backend.includes("pro")) {
+            msg = "Rendering full reply (Pro ~5× slower than realtime — then plays smooth)…";
+          } else if (session.smooth_buffer) {
+            msg = "Rendering full reply for smooth playback…";
+          }
+          setState("thinking", msg);
+          if (thinkDiv) thinkDiv.textContent = msg;
+        } else if (m.type === "first_audio_ms") {
+          lastServerAudioMs = m.ms;
+        } else if (m.type === "av_ready") {
+          setState("thinking", "Starting…");
+          if (thinkDiv) thinkDiv.textContent = "Starting…";
+        } else if (m.type === "done") {
+          history.push({ role: "assistant", content: m.reply });
+          if (m.reply) pendingReplyText = m.reply;
+          finishTurn(m.reply);
+        } else if (m.type === "error") {
+          if (thinkDiv) { thinkDiv.remove(); thinkDiv = null; }
+          let msg = m.message || "unknown error";
+          if (msg.includes("429")) {
+            msg = "OpenAI account is out of credits (429). Add credits or update OPENAI_API_KEY in services/avatar/.env. " +
+                  "Tip: type \"/say hello there\" to test voice + video without the LLM.";
+          }
+          addMeta("⚠ " + msg);
+          waitingFirstWord = false;
+          pendingReplyText = "";
+          finishTurn(null);
+        }
+      };
+      chatWs.onclose = () => setTimeout(connectChat, 1200);
+    }
+
+    function markFirstWord() {
+      waitingFirstWord = false;
+      const ms = Math.round(performance.now() - tSend);
+      $("st-ttfw").textContent = (ms / 1000).toFixed(2) + "s";
+      turnClient.push({ ttfw_ms: ms, server_audio_ms: lastServerAudioMs });
+      // Reveal chat bubble + caption in sync with first spoken frame/audio.
+      if (pendingReplyText) {
+        updateChatBubble(pendingReplyText);
+        caption.textContent = pendingReplyText;
+      }
+    }
+
+    function finishTurn(reply) {
+      busy = false; sendBtn.disabled = false; input.disabled = false;
+      const wait = () => {
+        // Stay in loading until AV for this turn has started (and then finished).
+        if (waitingFirstWord) return setTimeout(wait, 200);
+        if (audioCtx && audioCtx.currentTime < speakingUntil - 0.15) return setTimeout(wait, 200);
+        if (thinkDiv) { thinkDiv.remove(); thinkDiv = null; }
+        if (reply) {
+          if (!botDiv) botDiv = addMessage("bot", "");
+          botDiv.textContent = reply;
+        }
+        botDiv = null; sentences = []; speechChunks = [];
+        pendingReplyText = "";
+        caption.textContent = "";
+        if (turnDoneResolve) {
+          const r = turnDoneResolve;
+          turnDoneResolve = null;
+          r({ reply, ok: !!reply });
+        }
+        if (convMode && !benchRunning) startListening();
+        else if (!benchRunning) input.focus();
+      };
+      // Safety: if lips never start (render failed), surface error after 90s
+      const started = performance.now();
+      const guarded = () => {
+        if (waitingFirstWord && performance.now() - started > 90000) {
+          waitingFirstWord = false;
+          addMeta("⚠ Avatar render timed out — no video produced for this turn.");
+          if (thinkDiv) { thinkDiv.remove(); thinkDiv = null; }
+          pendingReplyText = "";
+        }
+        wait();
+      };
+      guarded();
+    }
+
+    let turnDoneResolve = null;
+    let benchRunning = false;
+
+    async function saySend(text) {
+      // "/say ..." bypasses the LLM and speaks the text directly.
+      addMessage("user", "/say " + text);
+      sentences = []; speechChunks = []; botDiv = null;
+      waitingFirstWord = true; tSend = performance.now();
+      pendingReplyText = text;
+      setState("thinking", "Preparing speech…");
+      thinkDiv = addMessage("bot thinking", "Preparing speech…");
+      try {
+        const r = await fetch("/say", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "say failed");
+        sentences.push({ text, dur: j.audio_s });
+        lastServerAudioMs = j.tts_ms;
+        // Bubble + caption reveal only when first spoken AV frame hits (markFirstWord).
+        finishTurn(text);
+      } catch (err) {
+        waitingFirstWord = false;
+        pendingReplyText = "";
+        if (thinkDiv) { thinkDiv.remove(); thinkDiv = null; }
+        addMeta("⚠ " + err.message);
+        finishTurn(null);
+      }
+    }
+
+    function send(text) {
+      ensureAudio();
+      if (text.toLowerCase().startsWith("/say ")) { saySend(text.slice(5)); return; }
+      addMessage("user", text);
+      const prior = history.slice();
+      history.push({ role: "user", content: text });
+      busy = true; sendBtn.disabled = true; input.disabled = true;
+      sentences = []; speechChunks = []; botDiv = null;
+      waitingFirstWord = true; tSend = performance.now();
+      setState("thinking", "Thinking");
+      thinkDiv = addMessage("bot thinking", "Thinking…");
+      chatWs.send(JSON.stringify({ text, history: prior }));
+    }
+
+    function sendAndWait(text) {
+      return new Promise((resolve, reject) => {
+        if (busy || benchRunning && turnDoneResolve) {
+          // allow sequential bench only
+        }
+        turnDoneResolve = resolve;
+        try {
+          send(text);
+        } catch (e) {
+          turnDoneResolve = null;
+          reject(e);
+        }
+        // safety timeout 3 min per turn
+        setTimeout(() => {
+          if (turnDoneResolve === resolve) {
+            turnDoneResolve = null;
+            resolve({ reply: null, ok: false, timeout: true });
+          }
+        }, 180000);
+      });
+    }
+
+    function addMessage(role, text) {
+      emptyEl.style.display = "none";
+      const d = document.createElement("div");
+      d.className = "msg " + role; d.textContent = text;
+      messagesEl.appendChild(d); messagesEl.scrollTop = messagesEl.scrollHeight;
+      return d;
+    }
+    function addMeta(text) { addMessage("meta", text); }
+
+    $("composer").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const t = input.value.trim();
+      if (!t || busy) return;
+      input.value = ""; send(t);
+    });
+
+    // ---------------- voice ----------------
+    const SRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let rec = null, recActive = false, convMode = false, finalText = "";
+    const micBtn = $("mic"), micLabel = $("mic-label");
+
+    function initRec() {
+      const r = new SRec();
+      r.lang = "en-US"; r.interimResults = true; r.continuous = false;
+      r.onstart = () => { recActive = true; caption.textContent = ""; };
+      r.onresult = (e) => {
+        let interim = "", final = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) final += t; else interim += t;
+        }
+        if (interim) caption.textContent = interim;
+        if (final.trim()) { finalText = final.trim(); try { r.stop(); } catch {} }
+      };
+      r.onerror = (e) => {
+        if (e.error === "not-allowed") { convMode = false; updateMic(); hint.textContent = "Microphone blocked."; }
+      };
+      r.onend = () => {
+        recActive = false;
+        if (finalText) { const t = finalText; finalText = ""; send(t); return; }
+        if (convMode && !busy) setTimeout(startListening, 150);
+      };
+      return r;
+    }
+    function startListening() { if (rec && !recActive && !busy) { try { rec.start(); } catch {} } }
+    function updateMic() {
+      micBtn.classList.toggle("active", convMode);
+      micLabel.textContent = convMode ? "End conversation" : "Start conversation";
+    }
+    micBtn.addEventListener("click", () => {
+      if (!SRec) { hint.textContent = "Voice needs Chrome or Edge — typing works everywhere."; return; }
+      ensureAudio();
+      convMode = !convMode; updateMic();
+      if (convMode) { if (!rec) rec = initRec(); hint.textContent = "Hands-free — just talk."; if (!busy) startListening(); }
+      else { hint.textContent = ""; if (rec && recActive) { try { rec.abort(); } catch {} } }
+    });
+
+    // ---------------- analytics / comparison ----------------
+    const RATES = { gpuHr: 0.44, livekitMin: 0.01, ttsPer1k: 0.05, charsPerTalkMin: 1000, llmTurn: 0.008, turnsPerMin: 1.5 };
+    const MODEL_COLORS = ["#6d8dff","#3ddc84","#f5b34a","#ff5d6c","#c084fc","#38bdf8","#fb923c","#a3e635"];
+    let lastStats = null;
+    let cmpData = null;
+
+    function sparkline(canvasEl, data, color) {
+      const c = canvasEl.getContext("2d");
+      const w = canvasEl.width = canvasEl.clientWidth * (devicePixelRatio || 1);
+      const h = canvasEl.height;
+      c.clearRect(0, 0, w, h);
+      if (!data || data.length < 2) return;
+      const max = Math.max(...data, 1000), min = 0;
+      c.beginPath();
+      data.forEach((v, i) => {
+        const x = i / (data.length - 1) * (w - 4) + 2;
+        const y = h - 6 - (v - min) / (max - min) * (h - 14);
+        i ? c.lineTo(x, y) : c.moveTo(x, y);
+      });
+      c.strokeStyle = color; c.lineWidth = 2; c.stroke();
+      const yRt = h - 6 - (960 - min) / (max - min) * (h - 14);
+      c.setLineDash([4, 4]); c.beginPath(); c.moveTo(0, yRt); c.lineTo(w, yRt);
+      c.strokeStyle = "#f5b34a88"; c.lineWidth = 1; c.stroke(); c.setLineDash([]);
+    }
+
+    function barChart(canvasEl, rows, valueKey, legendEl, opts = {}) {
+      const c = canvasEl.getContext("2d");
+      const dpr = devicePixelRatio || 1;
+      const w = canvasEl.width = canvasEl.clientWidth * dpr;
+      const h = canvasEl.height = (opts.height || 180) * dpr;
+      c.clearRect(0, 0, w, h);
+      const vals = rows.map(r => Number(r[valueKey]));
+      const has = vals.map(v => Number.isFinite(v));
+      const max = Math.max(0.01, ...vals.filter(Number.isFinite), opts.minMax || 0);
+      const n = rows.length;
+      const padL = 8 * dpr, padR = 8 * dpr, padT = 12 * dpr, padB = 28 * dpr;
+      const gap = 6 * dpr;
+      const barW = Math.max(4 * dpr, (w - padL - padR - gap * (n - 1)) / n);
+      rows.forEach((r, i) => {
+        const v = vals[i];
+        const x = padL + i * (barW + gap);
+        const color = MODEL_COLORS[i % MODEL_COLORS.length];
+        if (!has[i]) {
+          c.globalAlpha = 0.25;
+          c.fillStyle = color;
+          c.fillRect(x, h - padB - 4 * dpr, barW, 4 * dpr);
+          c.globalAlpha = 1;
+        } else {
+          const bh = Math.max(2 * dpr, (v / max) * (h - padT - padB));
+          c.fillStyle = color;
+          c.fillRect(x, h - padB - bh, barW, bh);
+        }
+        c.fillStyle = "#7e8aa0";
+        c.font = `${10 * dpr}px Segoe UI, sans-serif`;
+        c.textAlign = "center";
+        const label = (r.name || r.id).split(/[\s-]/)[0].slice(0, 6);
+        c.fillText(label, x + barW / 2, h - 8 * dpr);
+      });
+      if (legendEl) {
+        legendEl.innerHTML = rows.map((r, i) => {
+          const v = vals[i];
+          const shown = Number.isFinite(v) ? (opts.fmt ? opts.fmt(v) : v) : "—";
+          return `<span><i style="background:${MODEL_COLORS[i % MODEL_COLORS.length]}"></i>${r.name}: <b style="color:#ecf0f7">${shown}</b></span>`;
+        }).join("");
+      }
+    }
+
+    function groupedManualChart(canvasEl, rows, legendEl) {
+      const keys = [
+        { k: "fidelity_overall", label: "Fidelity", color: "#6d8dff" },
+        { k: "uncanny_valley", label: "Uncanny↑", color: "#3ddc84" },
+        { k: "hosting_overall", label: "Hosting", color: "#f5b34a" },
+      ];
+      const c = canvasEl.getContext("2d");
+      const dpr = devicePixelRatio || 1;
+      const w = canvasEl.width = canvasEl.clientWidth * dpr;
+      const h = canvasEl.height = 180 * dpr;
+      c.clearRect(0, 0, w, h);
+      const n = rows.length;
+      const padL = 8 * dpr, padR = 8 * dpr, padT = 12 * dpr, padB = 28 * dpr;
+      const groupGap = 10 * dpr;
+      const groupW = (w - padL - padR - groupGap * (n - 1)) / n;
+      const barGap = 2 * dpr;
+      const barW = (groupW - barGap * (keys.length - 1)) / keys.length;
+      rows.forEach((r, i) => {
+        const gx = padL + i * (groupW + groupGap);
+        keys.forEach((key, ki) => {
+          const v = Number(r[key.k]);
+          const x = gx + ki * (barW + barGap);
+          if (!Number.isFinite(v)) {
+            c.globalAlpha = 0.2; c.fillStyle = key.color;
+            c.fillRect(x, h - padB - 3 * dpr, barW, 3 * dpr); c.globalAlpha = 1;
+            return;
+          }
+          const bh = Math.max(2 * dpr, (v / 10) * (h - padT - padB));
+          c.fillStyle = key.color;
+          c.fillRect(x, h - padB - bh, barW, bh);
+        });
+        c.fillStyle = "#7e8aa0";
+        c.font = `${10 * dpr}px Segoe UI, sans-serif`;
+        c.textAlign = "center";
+        c.fillText((r.name || r.id).split(/[\s-]/)[0].slice(0, 6), gx + groupW / 2, h - 8 * dpr);
+      });
+      if (legendEl) {
+        legendEl.innerHTML = keys.map(k => `<span><i style="background:${k.color}"></i>${k.label}</span>`).join("");
+      }
+    }
+
+    function fmtMs(v) { return v == null ? "–" : (v >= 1000 ? (v / 1000).toFixed(2) + "s" : v + "ms"); }
+    function fmtNum(v, digits = 2) {
+      if (v == null || !Number.isFinite(Number(v))) return "–";
+      const n = Number(v);
+      return Number.isInteger(n) ? String(n) : n.toFixed(digits);
+    }
+
+    async function loadComparison() {
+      try {
+        cmpData = await (await fetch("/bench/comparison")).json();
+        renderComparison(cmpData);
+      } catch (e) {
+        console.warn("comparison load failed", e);
+      }
+    }
+
+    function renderComparison(data) {
+      const strip = $("cat-strip");
+      strip.innerHTML = (data.categories || []).map(c => `
+        <div class="cat-card">
+          <span class="auto">${c.automated ? "auto" : "manual"}</span>
+          <b>${c.label}</b>
+          <span>${c.description}</span>
+        </div>`).join("");
+
+      const tb = $("cmp-table").querySelector("tbody");
+      tb.innerHTML = data.rows.map(r => {
+        const st = r.status || "empty";
+        return `<tr>
+          <td><b>${r.name}</b></td>
+          <td><span class="pill ${st}">${st}</span></td>
+          <td>${r.modality || "–"}</td>
+          <td class="num">${fmtNum(r.realtime_factor)}</td>
+          <td class="num">${fmtNum(r.gen_ms_avg, 0)}</td>
+          <td class="num">${fmtNum(r.sessions_per_gpu, 2)}</td>
+          <td class="num">${r.usd_per_session_hour_gpu != null ? "$" + fmtNum(r.usd_per_session_hour_gpu, 3) : "–"}</td>
+          <td class="num">${fmtNum(r.fidelity_overall, 1)}</td>
+          <td class="num">${fmtNum(r.uncanny_valley, 1)}</td>
+          <td class="num">${fmtNum(r.composite_stability, 1)}</td>
+          <td class="num">${fmtNum(r.hosting_overall, 1)}</td>
+        </tr>`;
+      }).join("");
+
+      const rows = data.rows;
+      barChart($("chart-rtf"), rows, "realtime_factor", $("leg-rtf"), { fmt: v => v.toFixed(2) + "×" });
+      barChart($("chart-spg"), rows, "sessions_per_gpu", $("leg-spg"), { fmt: v => v.toFixed(2) });
+      barChart($("chart-cost"), rows, "usd_per_session_hour_gpu", $("leg-cost"), { fmt: v => "$" + v.toFixed(3) });
+      groupedManualChart($("chart-manual"), rows, $("leg-manual"));
+
+      const sel = $("score-model");
+      const prev = sel.value;
+      sel.innerHTML = data.rows.map(r => `<option value="${r.id}">${r.name}</option>`).join("");
+      if (prev) sel.value = prev;
+    }
+
+    async function loadScoreDraft() {
+      const id = $("score-model").value;
+      if (!id) return;
+      try {
+        const r = await (await fetch(`/bench/results/${id}`)).json();
+        const f = (r.manual || {}).fidelity || {};
+        $("score-fidelity").value = f.overall ?? "";
+        $("score-uncanny").value = f.uncanny_valley ?? "";
+        $("score-composite").value = f.composite_stability ?? "";
+        $("score-lips").value = f.lip_sync ?? "";
+        $("score-identity").value = f.identity ?? "";
+        $("score-notes").value = f.notes || "";
+      } catch {}
+    }
+
+    $("score-model").addEventListener("change", loadScoreDraft);
+    $("score-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = $("score-model").value;
+      const body = {
+        fidelity: {
+          overall: numOrNull($("score-fidelity").value),
+          uncanny_valley: numOrNull($("score-uncanny").value),
+          composite_stability: numOrNull($("score-composite").value),
+          lip_sync: numOrNull($("score-lips").value),
+          identity: numOrNull($("score-identity").value),
+          notes: $("score-notes").value || "",
+        },
+      };
+      const res = await fetch(`/bench/results/${id}/scores`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      $("score-msg").textContent = res.ok ? "Saved." : "Save failed.";
+      if (res.ok) loadComparison();
+      setTimeout(() => { $("score-msg").textContent = ""; }, 2000);
+    });
+    function numOrNull(v) { const n = Number(v); return v === "" || !Number.isFinite(n) ? null : n; }
+
+    $("btn-refresh-cmp").onclick = () => loadComparison();
+    $("btn-run-bench").onclick = () => runDialogueBench();
+    $("btn-clear-results").onclick = async () => {
+      const id = $("score-model").value;
+      if (!id) return;
+      if (!confirm(`Clear all saved results for ${id}? This cannot be undone.`)) return;
+      const r = await fetch(`/bench/results/${id}/clear`, { method: "POST" });
+      $("score-msg").textContent = r.ok ? `Cleared ${id}` : "Clear failed";
+      await loadComparison();
+      await loadScoreDraft();
+      setTimeout(() => { $("score-msg").textContent = ""; }, 2000);
+    };
+
+    async function runDialogueBench() {
+      if (benchRunning) return;
+      const btn = $("btn-run-bench");
+      btn.disabled = true;
+      benchRunning = true;
+      convMode = false; updateMic();
+      history.length = 0;
+      turnClient.length = 0;
+
+      $("bench-run").style.display = "block";
+      showTab("demo"); // watch the face while it runs
+      ensureAudio();
+      addMeta("Starting standard 10-dialogue bench…");
+
+      let script;
+      try {
+        script = await (await fetch("/bench/dialogues")).json();
+      } catch (e) {
+        addMeta("⚠ Could not load dialogues.json");
+        benchRunning = false; btn.disabled = false;
+        return;
+      }
+
+      $("bench-run-title").textContent = script.name || "10-turn bench";
+      const turns = script.turns || [];
+      const list = $("bench-run-list");
+      list.innerHTML = turns.map(t => `<li id="bench-li-${t.id}">${t.id}. ${t.text}</li>`).join("");
+
+      // Reset to Jordan Blake + Full image
+      framingLevel = script.framing != null ? script.framing : 1;
+      syncFramingButtons(framingLevel);
+      try {
+        const r = await fetch("/bench/reset-portrait", { method: "POST" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "portrait reset failed");
+        await applySession(j);
+        $("drop").classList.add("hidden");
+        $("swap").hidden = false;
+      } catch (e) {
+        addMeta("⚠ Portrait reset: " + e.message + " — continuing with current face");
+      }
+
+      for (let i = 0; i < turns.length; i++) {
+        const t = turns[i];
+        const li = $("bench-li-" + t.id);
+        if (li) { li.style.color = "var(--amber)"; li.style.fontWeight = "600"; }
+        $("bench-run-status").textContent = `Turn ${i + 1}/${turns.length}: ${t.text}`;
+        $("bench-run-progress").textContent = `${i} / ${turns.length}`;
+        $("bench-run-bar").style.width = `${(i / turns.length) * 100}%`;
+        showTab("demo");
+
+        const result = await sendAndWait(t.text);
+        if (li) {
+          li.style.color = result.ok ? "var(--live)" : "var(--rec)";
+          li.style.fontWeight = "500";
+          if (result.reply) li.title = result.reply;
+        }
+        if (!result.ok) {
+          addMeta(`⚠ Turn ${t.id} failed${result.timeout ? " (timeout)" : ""}`);
+        }
+        // small gap between turns
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      $("bench-run-progress").textContent = `${turns.length} / ${turns.length}`;
+      $("bench-run-bar").style.width = "100%";
+      $("bench-run-status").textContent = "Capturing automated stats…";
+
+      try {
+        await fetch("/bench/capture", { method: "POST" });
+      } catch {}
+
+      await loadComparison();
+      // Preselect active backend in score form
+      try {
+        const h = await (await fetch("/healthz")).json();
+        if (h.backend_id) {
+          $("score-model").value = h.backend_id;
+          await loadScoreDraft();
+        }
+      } catch {}
+
+      benchRunning = false;
+      btn.disabled = false;
+      $("bench-run-status").textContent = "Done — enter manual fidelity / uncanny / composite scores below.";
+      showTab("analytics");
+      $("score-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      $("score-msg").textContent = "Bench complete. Fill scores now.";
+      addMeta("Bench complete. Score this model in Analytics.");
+    }
+
+    $("btn-capture").onclick = async () => {
+      $("btn-capture").disabled = true;
+      try {
+        const r = await fetch("/bench/capture", { method: "POST" });
+        const j = await r.json();
+        $("score-msg").textContent = r.ok ? `Captured ${j.model_id}` : (j.error || "capture failed");
+        await loadComparison();
+      } finally {
+        $("btn-capture").disabled = false;
+        setTimeout(() => { $("score-msg").textContent = ""; }, 2500);
+      }
+    };
+    $("btn-export-csv").onclick = () => {
+      if (!cmpData) return;
+      const cols = ["id","name","status","modality","realtime_factor","gen_ms_avg","sessions_per_gpu","usd_per_session_hour_gpu","fidelity_overall","uncanny_valley","composite_stability","hosting_overall"];
+      const lines = [cols.join(",")].concat(cmpData.rows.map(r => cols.map(c => {
+        const v = r[c];
+        if (v == null) return "";
+        const s = String(v).replace(/"/g, '""');
+        return /[",]/.test(s) ? `"${s}"` : s;
+      }).join(",")));
+      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "avatar-model-comparison.csv";
+      a.click();
+    };
+
+    async function pollStats() {
+      try {
+        const s = await (await fetch("/stats")).json();
+        lastStats = s;
+        if (s.backend_name || s.backend_id) {
+          $("st-backend").textContent = s.backend_name || s.backend_id;
+        }
+        $("a-gen").textContent = s.gen_ms_avg ? s.gen_ms_avg + "ms" : "–";
+        $("st-gen").textContent = s.gen_ms_avg ? s.gen_ms_avg + "ms" : "–";
+        $("a-rtf").textContent = (s.realtime_factor || 0) ? (s.realtime_factor + "×") : "–";
+        $("a-rtf").className = "val " + ((s.realtime_factor || 0) >= 1.2 ? "good" : "warn");
+        const spg = s.busy_ratio > 0 ? (0.85 / s.busy_ratio) : null;
+        $("a-spg").textContent = spg != null ? spg.toFixed(2) : "–";
+        $("a-vram").textContent = s.vram_used_gb ? s.vram_used_gb + " GB" : "–";
+        $("a-vram-note").textContent = "of " + (s.vram_total_gb || "?") + " GB total on this GPU";
+        $("a-chunks").textContent = (s.chunks_speaking ?? "–") + " / " + (s.chunks_total ?? "–");
+        sparkline($("chart-gen"), s.gen_ms_recent, "#6d8dff");
+
+        const turns = s.turns || [];
+        if (turns.length) {
+          const avg = (k) => Math.round(turns.reduce((a, t) => a + (t[k] || 0), 0) / turns.length);
+          $("a-llm").textContent = fmtMs(avg("llm_first_ms"));
+          $("a-tts").textContent = fmtMs(avg("first_audio_ms"));
+        }
+        if (turnClient.length) {
+          const avgT = Math.round(turnClient.reduce((a, t) => a + t.ttfw_ms, 0) / turnClient.length);
+          $("a-ttfw").textContent = fmtMs(avgT);
+          $("st-ttfw").textContent = fmtMs(avgT);
+          $("a-ttfw").className = "val " + (avgT < 2000 ? "good" : "warn");
+          const vids = turnClient.filter(t => t.server_audio_ms);
+          if (vids.length) {
+            const v = Math.round(vids.reduce((a, t) => a + (t.ttfw_ms - t.server_audio_ms), 0) / vids.length);
+            $("a-vid").textContent = fmtMs(Math.max(0, v));
+          }
+        }
+        const tb = $("turn-table").querySelector("tbody");
+        tb.innerHTML = turns.slice(-12).map((t, i) => {
+          const c = turnClient[turnClient.length - turns.length + i];
+          return `<tr><td>${i + 1}</td><td>${fmtMs(t.llm_first_ms)}</td><td>${fmtMs(t.first_audio_ms)}</td>` +
+                 `<td>${c ? fmtMs(c.ttfw_ms) : "–"}</td><td>${t.sentences}</td><td>${t.chars}</td></tr>`;
+        }).join("");
+        project();
+      } catch {}
+      const now = performance.now();
+      fpsWindow = fpsWindow.filter(t => now - t < 5000);
+      $("a-frames").textContent = framesRendered.toLocaleString();
+      $("a-fps").textContent = (fpsWindow.length / 5).toFixed(1) + " fps rendered (target 25)";
+      if (audioCtx) $("a-buf").textContent = Math.max(0, playhead - audioCtx.currentTime).toFixed(2) + "s";
+    }
+
+    function project() {
+      const conc = +$("s-conc").value, talk = +$("s-talk").value / 100, len = +$("s-len").value;
+      $("v-conc").textContent = conc.toLocaleString();
+      $("v-talk").textContent = Math.round(talk * 100) + "%";
+      $("v-len").textContent = len + " min";
+      const spg = lastStats && lastStats.busy_ratio > 0 ? (0.85 / lastStats.busy_ratio) : 3;
+      const gpus = Math.max(1, Math.ceil(conc / Math.max(spg, 0.01)));
+      $("p-gpus").textContent = gpus.toLocaleString();
+      $("p-gpus-note").textContent = `at ${spg.toFixed(2)} eff. sessions/GPU (0.85/busy)`;
+      const gpuCost = gpus * RATES.gpuHr;
+      $("p-gpu-cost").textContent = "$" + Math.round(gpuCost).toLocaleString() + "/hr";
+      const perSess = RATES.gpuHr / spg
+        + 60 * RATES.livekitMin
+        + talk * 60 * RATES.charsPerTalkMin / 1000 * RATES.ttsPer1k
+        + RATES.turnsPerMin * 60 * RATES.llmTurn;
+      $("p-sess").textContent = "$" + perSess.toFixed(2);
+      $("p-hour").textContent = "$" + Math.round(perSess * conc).toLocaleString();
+      $("p-hour-note").textContent = conc.toLocaleString() + " concurrent × $" + perSess.toFixed(2);
+    }
+    ["s-conc", "s-talk", "s-len"].forEach(id => $(id).addEventListener("input", project));
+
+    // ---------------- boot ----------------
+    fetch("/healthz").then(r => r.json()).then(h => {
+      $("st-engine").textContent = h.ready
+        ? (h.worker_ready === false ? "warming models" : "ready")
+        : (h.stub || h.error ? "stub" : "warming");
+      if (h.backend_name || h.backend_id) $("st-backend").textContent = h.backend_name || h.backend_id;
+      if (h.error || h.stub) {
+        $("drop-spin").style.display = "none";
+        $("drop-title").textContent = "Backend not ready";
+        $("drop-sub").textContent = h.error || "Stub backend — restart after setup finishes.";
+        $("st-engine").title = h.error || "";
+      }
+      const loadSession = () => fetch("/avatar/session").then(r => r.ok ? r.json() : null).then(s => {
+        if (s && s.ready) applySession(s);
+      });
+      if (h.ready) loadSession();
+      if (!h.ready && !(h.stub || h.error)) {
+        $("drop-spin").style.display = "block";
+        $("drop-sub").textContent = "Engine is warming the default Jordan Blake portrait…";
+        const poll = setInterval(() => fetch("/healthz").then(r => r.json()).then(h2 => {
+          if (h2.backend_name || h2.backend_id) $("st-backend").textContent = h2.backend_name || h2.backend_id;
+          if (h2.error || h2.stub) {
+            clearInterval(poll);
+            $("drop-spin").style.display = "none";
+            $("st-engine").textContent = "stub";
+            $("drop-title").textContent = "Backend not ready";
+            $("drop-sub").textContent = h2.error || "Stub backend — restart after setup.";
+            return;
+          }
+          if (h2.ready) {
+            $("st-engine").textContent = h2.worker_ready === false ? "warming models" : "ready";
+            clearInterval(poll);
+            loadSession();
+            if (h2.worker_ready === false) {
+              const wp = setInterval(() => fetch("/healthz").then(r => r.json()).then(h3 => {
+                if (h3.error) {
+                  clearInterval(wp);
+                  $("st-engine").textContent = "error";
+                  addMeta("⚠ " + h3.error);
+                  return;
+                }
+                if (h3.worker_ready) {
+                  clearInterval(wp);
+                  $("st-engine").textContent = "ready";
+                  addMeta("LivePortrait models warm — chat when ready.");
+                } else {
+                  $("st-engine").textContent = "warming models";
+                }
+              }), 3000);
+            }
+          }
+        }), 2000);
+      } else if (h.ready && h.worker_ready === false) {
+        const wp = setInterval(() => fetch("/healthz").then(r => r.json()).then(h3 => {
+          if (h3.error) {
+            clearInterval(wp);
+            $("st-engine").textContent = "error";
+            addMeta("⚠ " + h3.error);
+            return;
+          }
+          if (h3.worker_ready) {
+            clearInterval(wp);
+            $("st-engine").textContent = "ready";
+          } else {
+            $("st-engine").textContent = "warming models";
+          }
+        }), 3000);
+      }
+    });
+    window.addEventListener("resize", resizeCanvas);
+    connectStream();
+    connectChat();
+    updateSoundGate();
+    requestAnimationFrame(render);
+    setInterval(pollStats, 2000);
+    pollStats();
+    loadComparison();
+  </script>
+</body>
+</html>
