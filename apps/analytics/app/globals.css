@@ -140,11 +140,58 @@ button, input { font: inherit; }
   font-size: 13px;
 }
 .btn:hover { border-color: var(--line-strong); background: var(--panel-2); }
+.btn-active {
+  border-color: var(--accent-dim);
+  background: #241c12;
+  color: var(--accent);
+}
 .btn-link {
   text-decoration: none;
   display: inline-flex;
   align-items: center;
 }
+
+.charts-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.scale-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: inherit;
+  justify-content: inherit;
+}
+.sort-btn:hover,
+.sort-btn.active { color: var(--accent); }
+th.num .sort-btn { justify-content: flex-end; }
+.sort-ind {
+  font-size: 9px;
+  opacity: 0.55;
+  font-weight: 700;
+}
+.sort-btn.active .sort-ind { opacity: 1; color: var(--accent); }
 
 .dl-wrap { position: relative; }
 .dl-menu {

@@ -17,13 +17,65 @@ const COLORS = [
   "#9b7ed9", "#4ecdc4", "#f07a6e", "#7eb8da", "#b8d46b",
 ];
 
+type ChartScale = "robust" | "linear" | "log";
+type SortKey = keyof ComparisonRow | "name" | "status" | "modality";
+type SortDir = "asc" | "desc";
+
+/** Cap axis so one outlier (e.g. Wav2Lip RTF) doesn't crush the rest. */
+function axisCeiling(finite: number[], mode: ChartScale): { max: number; clippedIds: boolean } {
+  if (!finite.length) return { max: 1, clippedIds: false };
+  const sorted = [...finite].sort((a, b) => a - b);
+  const rawMax = sorted[sorted.length - 1];
+  if (mode === "linear") return { max: Math.max(rawMax, 1e-6), clippedIds: false };
+  if (mode === "log") return { max: Math.max(rawMax, 1e-6), clippedIds: false };
+  if (sorted.length === 1) return { max: Math.max(rawMax, 1e-6), clippedIds: false };
+  const second = sorted[sorted.length - 2];
+  const p75 = sorted[Math.floor((sorted.length - 1) * 0.75)];
+  let max = Math.max(second * 1.25, p75 * 2.2, 1e-6);
+  // If the leader is only mildly ahead, use true max.
+  if (rawMax <= max * 1.08) return { max: rawMax, clippedIds: false };
+  return { max, clippedIds: true };
+}
+
+function barHeightRatio(v: number, max: number, mode: ChartScale): number {
+  if (mode === "log") {
+    const lo = Math.log10(Math.max(max * 1e-4, 1e-4));
+    const hi = Math.log10(Math.max(max, 1e-4));
+    const x = Math.log10(Math.max(v, 1e-4));
+    return Math.max(0.02, (x - lo) / Math.max(hi - lo, 1e-9));
+  }
+  return Math.min(1, v / max);
+}
+
+function drawBreakMark(
+  c: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  dpr: number,
+) {
+  c.save();
+  c.fillStyle = "#0b0f14";
+  c.fillRect(x - 1 * dpr, y - 5 * dpr, w + 2 * dpr, 10 * dpr);
+  c.strokeStyle = "#e8eef7";
+  c.lineWidth = 1.5 * dpr;
+  c.beginPath();
+  c.moveTo(x - 2 * dpr, y + 3 * dpr);
+  c.lineTo(x + w * 0.35, y - 3 * dpr);
+  c.lineTo(x + w * 0.65, y + 3 * dpr);
+  c.lineTo(x + w + 2 * dpr, y - 3 * dpr);
+  c.stroke();
+  c.restore();
+}
+
 function barChart(
   canvas: HTMLCanvasElement,
   rows: ComparisonRow[],
   key: keyof ComparisonRow,
   legendEl: HTMLElement | null,
-  opts: { fmt?: (v: number) => string } = {},
+  opts: { fmt?: (v: number) => string; scale?: ChartScale } = {},
 ) {
+  const mode = opts.scale || "robust";
   const c = canvas.getContext("2d");
   if (!c) return;
   const dpr = window.devicePixelRatio || 1;
@@ -31,25 +83,41 @@ function barChart(
   const h = (canvas.height = 200 * dpr);
   c.clearRect(0, 0, w, h);
   const vals = rows.map((r) => Number(r[key]));
-  const finite = vals.filter((v) => Number.isFinite(v));
-  const max = Math.max(1e-6, ...finite, 0);
+  const finite = vals.filter((v) => Number.isFinite(v) && v > 0);
+  const { max, clippedIds } = axisCeiling(finite, mode);
   const n = rows.length;
-  const padL = 10 * dpr, padR = 10 * dpr, padT = 14 * dpr, padB = 36 * dpr;
+  const padL = 10 * dpr, padR = 10 * dpr, padT = 18 * dpr, padB = 36 * dpr;
   const gap = 5 * dpr;
   const barW = Math.max(4 * dpr, (w - padL - padR - gap * Math.max(0, n - 1)) / n);
+  const plotH = h - padT - padB;
+
+  if (mode === "log" || clippedIds) {
+    c.fillStyle = "#7e8aa0";
+    c.font = `${9 * dpr}px DM Sans, sans-serif`;
+    c.textAlign = "left";
+    const note =
+      mode === "log"
+        ? "log scale"
+        : "axis capped — zig-zag = outlier above scale";
+    c.fillText(note, padL, 11 * dpr);
+  }
+
   rows.forEach((r, i) => {
     const v = vals[i];
     const x = padL + i * (barW + gap);
     const color = COLORS[i % COLORS.length];
-    if (!Number.isFinite(v)) {
+    if (!Number.isFinite(v) || v <= 0) {
       c.globalAlpha = 0.28;
       c.fillStyle = color;
       c.fillRect(x, h - padB - 3 * dpr, barW, 3 * dpr);
       c.globalAlpha = 1;
     } else {
-      const bh = Math.max(2 * dpr, (v / max) * (h - padT - padB));
+      const clipped = mode === "robust" && v > max * 1.001;
+      const ratio = barHeightRatio(Math.min(v, max), max, mode);
+      const bh = Math.max(2 * dpr, ratio * plotH);
       c.fillStyle = color;
       c.fillRect(x, h - padB - bh, barW, bh);
+      if (clipped) drawBreakMark(c, x, h - padB - bh, barW, dpr);
     }
     c.fillStyle = "#9aa6b8";
     c.font = `${9.5 * dpr}px DM Sans, sans-serif`;
@@ -62,7 +130,8 @@ function barChart(
       .map((r, i) => {
         const v = vals[i];
         const shown = Number.isFinite(v) ? (opts.fmt ? opts.fmt(v) : String(v)) : "—";
-        return `<span><i style="background:${COLORS[i % COLORS.length]}"></i>${r.name}: <b>${shown}</b></span>`;
+        const over = mode === "robust" && Number.isFinite(v) && v > max * 1.001;
+        return `<span><i style="background:${COLORS[i % COLORS.length]}"></i>${r.name}: <b>${shown}${over ? " †" : ""}</b></span>`;
       })
       .join("");
   }
@@ -134,9 +203,38 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
   );
 }
 
+function compareRows(a: ComparisonRow, b: ComparisonRow, key: SortKey, dir: SortDir): number {
+  const mul = dir === "asc" ? 1 : -1;
+  const av = a[key as keyof ComparisonRow];
+  const bv = b[key as keyof ComparisonRow];
+  if (typeof av === "string" || typeof bv === "string" || key === "name" || key === "status" || key === "modality") {
+    const as = String(av ?? "");
+    const bs = String(bv ?? "");
+    return as.localeCompare(bs) * mul;
+  }
+  const an = Number(av);
+  const bn = Number(bv);
+  const aOk = Number.isFinite(an);
+  const bOk = Number.isFinite(bn);
+  if (!aOk && !bOk) return 0;
+  if (!aOk) return 1;
+  if (!bOk) return -1;
+  if (an === bn) return String(a.name).localeCompare(String(b.name));
+  return (an - bn) * mul;
+}
+
 export function Dashboard({ data }: { data: ComparisonData }) {
   const router = useRouter();
   const uid = useId();
+  const [sortKey, setSortKey] = useState<SortKey>("fidelity_overall");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [chartScale, setChartScale] = useState<ChartScale>("robust");
+  const [dlOpen, setDlOpen] = useState(false);
+
+  const sortedRows = useMemo(() => {
+    return [...data.rows].sort((a, b) => compareRows(a, b, sortKey, sortDir));
+  }, [data.rows, sortKey, sortDir]);
+
   const details = useMemo(() => {
     const list = data.details?.length
       ? [...data.details]
@@ -161,24 +259,26 @@ export function Dashboard({ data }: { data: ComparisonData }) {
   const legSpg = useRef<HTMLDivElement>(null);
   const legCost = useRef<HTMLDivElement>(null);
   const legMan = useRef<HTMLDivElement>(null);
-  const [dlOpen, setDlOpen] = useState(false);
 
   useEffect(() => {
-    const rows = data.rows;
+    const rows = sortedRows;
     const paint = () => {
       if (rtfRef.current) {
         barChart(rtfRef.current, rows, "realtime_factor", legRtf.current, {
           fmt: (v) => `${v.toFixed(2)}×`,
+          scale: chartScale,
         });
       }
       if (spgRef.current) {
         barChart(spgRef.current, rows, "sessions_per_gpu", legSpg.current, {
           fmt: (v) => v.toFixed(2),
+          scale: chartScale,
         });
       }
       if (costRef.current) {
         barChart(costRef.current, rows, "usd_per_session_hour_gpu", legCost.current, {
           fmt: (v) => `$${v.toFixed(3)}`,
+          scale: chartScale,
         });
       }
       if (manRef.current) groupedManualChart(manRef.current, rows, legMan.current);
@@ -186,7 +286,56 @@ export function Dashboard({ data }: { data: ComparisonData }) {
     paint();
     window.addEventListener("resize", paint);
     return () => window.removeEventListener("resize", paint);
-  }, [data]);
+  }, [sortedRows, chartScale]);
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Costs / gen / busy: lower is better → default asc; scores / RTF → desc
+      const ascDefault = new Set<SortKey>([
+        "gen_ms_avg",
+        "busy_ratio",
+        "usd_per_session_hour_gpu",
+        "name",
+        "status",
+        "modality",
+      ]);
+      setSortDir(ascDefault.has(key) ? "asc" : "desc");
+    }
+  }
+
+  function SortTh({
+    label,
+    k,
+    numeric,
+  }: {
+    label: string;
+    k: SortKey;
+    numeric?: boolean;
+  }) {
+    const active = sortKey === k;
+    const aria = active
+      ? sortDir === "asc"
+        ? "ascending"
+        : "descending"
+      : "none";
+    return (
+      <th scope="col" className={numeric ? "num" : undefined} aria-sort={aria}>
+        <button
+          type="button"
+          className={`sort-btn ${active ? "active" : ""}`}
+          onClick={() => toggleSort(k)}
+        >
+          <span>{label}</span>
+          <span className="sort-ind" aria-hidden="true">
+            {active ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
+          </span>
+        </button>
+      </th>
+    );
+  }
 
   async function logout() {
     await fetch("/api/logout", { method: "POST" });
@@ -309,36 +458,39 @@ export function Dashboard({ data }: { data: ComparisonData }) {
             <div className="section-head">
               <h2 id="matrix-h">Comparison matrix</h2>
               <p className="sub">
-                Higher realtime factor and sessions/GPU are better. Lower $/sess-hr
-                is better. Uncanny↑: 10 = most natural.
+                Click a column header to sort (click again to reverse). Higher
+                realtime factor and sessions/GPU are better. Lower $/sess-hr is
+                better. Uncanny↑: 10 = most natural. Sorted by{" "}
+                <strong>{String(sortKey).replace(/_/g, " ")}</strong>{" "}
+                ({sortDir === "asc" ? "low → high" : "high → low"}).
               </p>
             </div>
             <div className="tbl-wrap" tabIndex={0} role="region" aria-labelledby="matrix-h">
               <table className="tbl">
                 <caption className="sr-only">
-                  Talking-head model metrics including realtime factor, generation
-                  time, sessions per GPU, cost, fidelity, and hosting
+                  Sortable talking-head model metrics including realtime factor,
+                  generation time, sessions per GPU, cost, fidelity, and hosting
                 </caption>
                 <thead>
                   <tr>
-                    <th scope="col">Model</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Modality</th>
-                    <th scope="col" className="num">RT factor</th>
-                    <th scope="col" className="num">Gen ms</th>
-                    <th scope="col" className="num">Busy ratio</th>
-                    <th scope="col" className="num">Sessions/GPU</th>
-                    <th scope="col" className="num">$/sess-hr</th>
-                    <th scope="col" className="num">Fidelity</th>
-                    <th scope="col" className="num">Uncanny↑</th>
-                    <th scope="col" className="num">Composite</th>
-                    <th scope="col" className="num">Lips</th>
-                    <th scope="col" className="num">Identity</th>
-                    <th scope="col" className="num">Hosting</th>
+                    <SortTh label="Model" k="name" />
+                    <SortTh label="Status" k="status" />
+                    <SortTh label="Modality" k="modality" />
+                    <SortTh label="RT factor" k="realtime_factor" numeric />
+                    <SortTh label="Gen ms" k="gen_ms_avg" numeric />
+                    <SortTh label="Busy ratio" k="busy_ratio" numeric />
+                    <SortTh label="Sessions/GPU" k="sessions_per_gpu" numeric />
+                    <SortTh label="$/sess-hr" k="usd_per_session_hour_gpu" numeric />
+                    <SortTh label="Fidelity" k="fidelity_overall" numeric />
+                    <SortTh label="Uncanny↑" k="uncanny_valley" numeric />
+                    <SortTh label="Composite" k="composite_stability" numeric />
+                    <SortTh label="Lips" k="lip_sync" numeric />
+                    <SortTh label="Identity" k="identity" numeric />
+                    <SortTh label="Hosting" k="hosting_overall" numeric />
                   </tr>
                 </thead>
                 <tbody>
-                  {data.rows.map((r) => {
+                  {sortedRows.map((r) => {
                     const st = r.status || "empty";
                     return (
                       <tr key={r.id}>
@@ -369,11 +521,36 @@ export function Dashboard({ data }: { data: ComparisonData }) {
           </section>
 
           <section id="charts" className="section" aria-labelledby="charts-h">
-            <h2 id="charts-h">Charts</h2>
-            <p className="sub">
-              Visual summary of the matrix. Each chart has an accessible text
-              equivalent in the legend and in the data tables below.
-            </p>
+            <div className="section-head charts-head">
+              <div>
+                <h2 id="charts-h">Charts</h2>
+                <p className="sub">
+                  Bars follow the matrix sort order. Default scale is{" "}
+                  <strong>robust</strong> (caps extreme outliers like Wav2Lip RTF
+                  or EchoMimic cost so the rest stay readable). † in the legend
+                  means the true value is above the capped axis.
+                </p>
+              </div>
+              <div className="scale-toggle" role="group" aria-label="Chart scale">
+                {(
+                  [
+                    ["robust", "Robust"],
+                    ["linear", "Linear"],
+                    ["log", "Log"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`btn ${chartScale === id ? "btn-active" : ""}`}
+                    aria-pressed={chartScale === id}
+                    onClick={() => setChartScale(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="chart-grid">
               <figure className="chart-card">
                 <figcaption className="tag">Realtime factor (higher = faster than playback)</figcaption>
@@ -381,7 +558,7 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                   ref={rtfRef}
                   height={200}
                   role="img"
-                  aria-label={chartSummary(data.rows, "realtime_factor", "Realtime factor")}
+                  aria-label={chartSummary(sortedRows, "realtime_factor", "Realtime factor")}
                 />
                 <div className="legend" ref={legRtf} />
               </figure>
@@ -391,7 +568,7 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                   ref={spgRef}
                   height={200}
                   role="img"
-                  aria-label={chartSummary(data.rows, "sessions_per_gpu", "Sessions per GPU")}
+                  aria-label={chartSummary(sortedRows, "sessions_per_gpu", "Sessions per GPU")}
                 />
                 <div className="legend" ref={legSpg} />
               </figure>
@@ -401,7 +578,7 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                   ref={costRef}
                   height={200}
                   role="img"
-                  aria-label={chartSummary(data.rows, "usd_per_session_hour_gpu", "Cost per session-hour")}
+                  aria-label={chartSummary(sortedRows, "usd_per_session_hour_gpu", "Cost per session-hour")}
                 />
                 <div className="legend" ref={legCost} />
               </figure>
