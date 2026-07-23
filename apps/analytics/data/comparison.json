@@ -1007,5 +1007,5 @@
     }
   ],
   "hardware_note": "Primary harness: RTX 4090-class GPU, Windows, torch.compile off unless noted.",
-  "updated_at": "2026-07-23T16:11:56"
+  "updated_at": "2026-07-23T16:16:03"
 }

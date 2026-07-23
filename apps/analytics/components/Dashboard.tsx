@@ -18,8 +18,110 @@ const COLORS = [
 ];
 
 type ChartScale = "robust" | "linear" | "log";
-type SortKey = keyof ComparisonRow | "name" | "status" | "modality";
+type SortKey = keyof ComparisonRow | "name" | "modality";
 type SortDir = "asc" | "desc";
+
+type MetricDef = {
+  key: SortKey;
+  tab: string;
+  title: string;
+  better: string;
+  body: string;
+};
+
+const METRIC_DEFS: MetricDef[] = [
+  {
+    key: "name",
+    tab: "Model",
+    title: "Model",
+    better: "—",
+    body: "Backend name. Click a row name to jump to that model’s detailed review (pros, cons, notes) further down the page.",
+  },
+  {
+    key: "modality",
+    tab: "Modality",
+    title: "Modality",
+    better: "Depends on product needs",
+    body: "image_animation drives or edits a still (lipsync / warp / 3DMM paste — source pixels largely preserved). video_generation synthesizes new frame pixels with a generative model conditioned on a still + audio.",
+  },
+  {
+    key: "realtime_factor",
+    tab: "RT factor",
+    title: "Realtime factor",
+    better: "Higher is better",
+    body: "How many times faster than playback the model generates. 1.0× = realtime. Above 1 means headroom for concurrency; below 1 means slower than conversation speed.",
+  },
+  {
+    key: "gen_ms_avg",
+    tab: "Gen ms",
+    title: "Generation time (ms)",
+    better: "Lower is better",
+    body: "Average GPU time to produce one chunk (continuous models) or one utterance render (clip models), in milliseconds.",
+  },
+  {
+    key: "busy_ratio",
+    tab: "Busy ratio",
+    title: "Busy ratio",
+    better: "Lower is better",
+    body: "GPU-seconds ÷ speech-seconds (or chunk_gen ÷ chunk_duration). Example: 0.5 means the GPU is busy half as long as the audio it produces — room for more sessions.",
+  },
+  {
+    key: "sessions_per_gpu",
+    tab: "Sess/GPU",
+    title: "Sessions per GPU",
+    better: "Higher is better",
+    body: "Effective concurrent sessions per GPU ≈ 0.85 ÷ busy_ratio, also capped by VRAM. Values below 1 mean you need more than one GPU-hour per session-hour of speech.",
+  },
+  {
+    key: "usd_per_session_hour_gpu",
+    tab: "$/sess-hr",
+    title: "GPU $/session-hour",
+    better: "Lower is better",
+    body: "Estimated GPU-only cost to run one concurrent talking session for one hour: $0.44 ÷ sessions_per_gpu (RTX 4090-class pod rate used in this bench). Excludes TTS, LLM, and networking.",
+  },
+  {
+    key: "fidelity_overall",
+    tab: "Fidelity",
+    title: "Fidelity (overall)",
+    better: "Higher is better (1–10)",
+    body: "Manual overall visual quality after watching the same portrait and framing setup — identity, skin/teeth, motion, and general look.",
+  },
+  {
+    key: "uncanny_valley",
+    tab: "Uncanny",
+    title: "Uncanny valley",
+    better: "Higher is more natural (1–10)",
+    body: "Manual score for how natural vs eerie the face feels. 10 = natural; low scores mean uncanny or broken expressions.",
+  },
+  {
+    key: "composite_stability",
+    tab: "Composite",
+    title: "Composite stability",
+    better: "Higher is better (1–10)",
+    body: "How stable the face looks when pasted into the full still (full-image framing). Low scores mean face swim, seams, or jitter against the background.",
+  },
+  {
+    key: "lip_sync",
+    tab: "Lips",
+    title: "Lip sync",
+    better: "Higher is better (1–10)",
+    body: "Manual score for mouth motion matching speech timing and shape.",
+  },
+  {
+    key: "identity",
+    tab: "Identity",
+    title: "Identity lock",
+    better: "Higher is better (1–10)",
+    body: "How well the animated face stays recognizable as the source portrait across the clip.",
+  },
+  {
+    key: "hosting_overall",
+    tab: "Hosting",
+    title: "Hosting & ops",
+    better: "Higher is better (1–10)",
+    body: "Curated operations score: self-hosting, Windows friendliness, dependency fragility, license, and day-2 restart pain. Not scored in the Demo UI — set in results JSON.",
+  },
+];
 
 /** Cap axis so one outlier (e.g. Wav2Lip RTF) doesn't crush the rest. */
 function axisCeiling(finite: number[], mode: ChartScale): { max: number; clippedIds: boolean } {
@@ -92,8 +194,8 @@ function barChart(
   const plotH = h - padT - padB;
 
   if (mode === "log" || clippedIds) {
-    c.fillStyle = "#7e8aa0";
-    c.font = `${9 * dpr}px DM Sans, sans-serif`;
+    c.fillStyle = "#c5d0e0";
+    c.font = `${9.5 * dpr}px DM Sans, sans-serif`;
     c.textAlign = "left";
     const note =
       mode === "log"
@@ -119,8 +221,8 @@ function barChart(
       c.fillRect(x, h - padB - bh, barW, bh);
       if (clipped) drawBreakMark(c, x, h - padB - bh, barW, dpr);
     }
-    c.fillStyle = "#9aa6b8";
-    c.font = `${9.5 * dpr}px DM Sans, sans-serif`;
+    c.fillStyle = "#d5deeb";
+    c.font = `${10 * dpr}px DM Sans, sans-serif`;
     c.textAlign = "center";
     const label = (r.name || r.id).replace("SoulX-", "").split(/[\s-]/)[0].slice(0, 7);
     c.fillText(label, x + barW / 2, h - 12 * dpr);
@@ -175,8 +277,8 @@ function groupedManualChart(
       c.fillStyle = key.color;
       c.fillRect(x, h - padB - bh, barW, bh);
     });
-    c.fillStyle = "#9aa6b8";
-    c.font = `${9.5 * dpr}px DM Sans, sans-serif`;
+    c.fillStyle = "#d5deeb";
+    c.font = `${10 * dpr}px DM Sans, sans-serif`;
     c.textAlign = "center";
     c.fillText(
       (r.name || r.id).replace("SoulX-", "").split(/[\s-]/)[0].slice(0, 7),
@@ -205,9 +307,9 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 
 function compareRows(a: ComparisonRow, b: ComparisonRow, key: SortKey, dir: SortDir): number {
   const mul = dir === "asc" ? 1 : -1;
-  const av = a[key as keyof ComparisonRow];
-  const bv = b[key as keyof ComparisonRow];
-  if (typeof av === "string" || typeof bv === "string" || key === "name" || key === "status" || key === "modality") {
+  const av = key === "name" ? a.name : a[key as keyof ComparisonRow];
+  const bv = key === "name" ? b.name : b[key as keyof ComparisonRow];
+  if (typeof av === "string" || typeof bv === "string" || key === "name" || key === "modality") {
     const as = String(av ?? "");
     const bs = String(bv ?? "");
     return as.localeCompare(bs) * mul;
@@ -229,7 +331,9 @@ export function Dashboard({ data }: { data: ComparisonData }) {
   const [sortKey, setSortKey] = useState<SortKey>("fidelity_overall");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [chartScale, setChartScale] = useState<ChartScale>("robust");
+  const [defKey, setDefKey] = useState<SortKey>("name");
   const [dlOpen, setDlOpen] = useState(false);
+  const activeDef = METRIC_DEFS.find((d) => d.key === defKey) || METRIC_DEFS[0];
 
   const sortedRows = useMemo(() => {
     return [...data.rows].sort((a, b) => compareRows(a, b, sortKey, sortDir));
@@ -289,17 +393,18 @@ export function Dashboard({ data }: { data: ComparisonData }) {
   }, [sortedRows, chartScale]);
 
   function toggleSort(key: SortKey) {
+    // Open the matching definition tab whenever a column is used.
+    if (METRIC_DEFS.some((d) => d.key === key)) setDefKey(key);
+
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      // Costs / gen / busy: lower is better → default asc; scores / RTF → desc
       const ascDefault = new Set<SortKey>([
         "gen_ms_avg",
         "busy_ratio",
         "usd_per_session_hour_gpu",
         "name",
-        "status",
         "modality",
       ]);
       setSortDir(ascDefault.has(key) ? "asc" : "desc");
@@ -322,13 +427,18 @@ export function Dashboard({ data }: { data: ComparisonData }) {
         : "descending"
       : "none";
     return (
-      <th scope="col" className={numeric ? "num" : undefined} aria-sort={aria}>
+      <th
+        scope="col"
+        className={`col-${String(k)} ${numeric ? "num" : ""}`}
+        aria-sort={aria}
+      >
         <button
           type="button"
           className={`sort-btn ${active ? "active" : ""}`}
           onClick={() => toggleSort(k)}
+          title={`Sort by ${label}. Also opens the definition for this metric.`}
         >
-          <span>{label}</span>
+          <span className="sort-label">{label}</span>
           <span className="sort-ind" aria-hidden="true">
             {active ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
           </span>
@@ -458,31 +568,79 @@ export function Dashboard({ data }: { data: ComparisonData }) {
             <div className="section-head">
               <h2 id="matrix-h">Comparison matrix</h2>
               <p className="sub">
-                Click a column header to sort (click again to reverse). Higher
-                realtime factor and sessions/GPU are better. Lower $/sess-hr is
-                better. Uncanny↑: 10 = most natural. Sorted by{" "}
-                <strong>{String(sortKey).replace(/_/g, " ")}</strong>{" "}
+                Use the definition tabs for what each column means. Click a column
+                header to sort (again to reverse) — that also opens its definition.
+                Currently sorted by{" "}
+                <strong>{activeDef.title}</strong>{" "}
                 ({sortDir === "asc" ? "low → high" : "high → low"}).
               </p>
             </div>
+
+            <div className="metric-defs" aria-label="Column definitions">
+              <div
+                className="metric-tabs"
+                role="tablist"
+                aria-label="Metric definitions"
+              >
+                {METRIC_DEFS.map((d) => {
+                  const selected = defKey === d.key;
+                  return (
+                    <button
+                      key={d.key}
+                      type="button"
+                      role="tab"
+                      id={`tab-${d.key}`}
+                      aria-selected={selected}
+                      aria-controls="metric-def-panel"
+                      tabIndex={selected ? 0 : -1}
+                      className={`metric-tab ${selected ? "active" : ""}`}
+                      onClick={() => setDefKey(d.key)}
+                    >
+                      {d.tab}
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                className="metric-panel"
+                id="metric-def-panel"
+                role="tabpanel"
+                aria-labelledby={`tab-${activeDef.key}`}
+              >
+                <div className="metric-panel-top">
+                  <h3>{activeDef.title}</h3>
+                  <span className="metric-better">{activeDef.better}</span>
+                </div>
+                <p>{activeDef.body}</p>
+                {defKey !== "name" && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => toggleSort(defKey)}
+                  >
+                    Sort matrix by {activeDef.tab}
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="tbl-wrap" tabIndex={0} role="region" aria-labelledby="matrix-h">
               <table className="tbl">
                 <caption className="sr-only">
-                  Sortable talking-head model metrics including realtime factor,
-                  generation time, sessions per GPU, cost, fidelity, and hosting
+                  Sortable talking-head model metrics. Column headers sort and open
+                  definitions above.
                 </caption>
                 <thead>
                   <tr>
                     <SortTh label="Model" k="name" />
-                    <SortTh label="Status" k="status" />
                     <SortTh label="Modality" k="modality" />
                     <SortTh label="RT factor" k="realtime_factor" numeric />
                     <SortTh label="Gen ms" k="gen_ms_avg" numeric />
                     <SortTh label="Busy ratio" k="busy_ratio" numeric />
-                    <SortTh label="Sessions/GPU" k="sessions_per_gpu" numeric />
+                    <SortTh label="Sess/GPU" k="sessions_per_gpu" numeric />
                     <SortTh label="$/sess-hr" k="usd_per_session_hour_gpu" numeric />
                     <SortTh label="Fidelity" k="fidelity_overall" numeric />
-                    <SortTh label="Uncanny↑" k="uncanny_valley" numeric />
+                    <SortTh label="Uncanny" k="uncanny_valley" numeric />
                     <SortTh label="Composite" k="composite_stability" numeric />
                     <SortTh label="Lips" k="lip_sync" numeric />
                     <SortTh label="Identity" k="identity" numeric />
@@ -490,31 +648,25 @@ export function Dashboard({ data }: { data: ComparisonData }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedRows.map((r) => {
-                    const st = r.status || "empty";
-                    return (
-                      <tr key={r.id}>
-                        <th scope="row">
-                          <a href={`#model-${r.id}`}>{r.name}</a>
-                        </th>
-                        <td>
-                          <span className={`pill ${st}`}>{st}</span>
-                        </td>
-                        <td>{(r.modality || "–").replace(/_/g, " ")}</td>
-                        <td className="num">{fmtNum(r.realtime_factor)}</td>
-                        <td className="num">{fmtNum(r.gen_ms_avg, 0)}</td>
-                        <td className="num">{fmtNum(r.busy_ratio)}</td>
-                        <td className="num">{fmtNum(r.sessions_per_gpu, 2)}</td>
-                        <td className="num">{fmtUsd(r.usd_per_session_hour_gpu)}</td>
-                        <td className="num">{fmtNum(r.fidelity_overall, 1)}</td>
-                        <td className="num">{fmtNum(r.uncanny_valley, 1)}</td>
-                        <td className="num">{fmtNum(r.composite_stability, 1)}</td>
-                        <td className="num">{fmtNum(r.lip_sync, 1)}</td>
-                        <td className="num">{fmtNum(r.identity, 1)}</td>
-                        <td className="num">{fmtNum(r.hosting_overall, 1)}</td>
-                      </tr>
-                    );
-                  })}
+                  {sortedRows.map((r) => (
+                    <tr key={r.id}>
+                      <th scope="row">
+                        <a href={`#model-${r.id}`}>{r.name}</a>
+                      </th>
+                      <td>{(r.modality || "–").replace(/_/g, " ")}</td>
+                      <td className="num">{fmtNum(r.realtime_factor)}</td>
+                      <td className="num">{fmtNum(r.gen_ms_avg, 0)}</td>
+                      <td className="num">{fmtNum(r.busy_ratio)}</td>
+                      <td className="num">{fmtNum(r.sessions_per_gpu, 2)}</td>
+                      <td className="num">{fmtUsd(r.usd_per_session_hour_gpu)}</td>
+                      <td className="num">{fmtNum(r.fidelity_overall, 1)}</td>
+                      <td className="num">{fmtNum(r.uncanny_valley, 1)}</td>
+                      <td className="num">{fmtNum(r.composite_stability, 1)}</td>
+                      <td className="num">{fmtNum(r.lip_sync, 1)}</td>
+                      <td className="num">{fmtNum(r.identity, 1)}</td>
+                      <td className="num">{fmtNum(r.hosting_overall, 1)}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
